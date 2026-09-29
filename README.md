@@ -107,35 +107,37 @@ Semantic retrieval using local embeddings/vector search is planned for a future 
 
 Architecture
 
-                       Browser
-                          │
-                          ▼
-                   Streamlit GUI
-                          │
-          ┌───────────────┼────────────────┐
-          │               │                │
-          ▼               ▼                ▼
-     Text input      Audio files       Images
-                          │                │
-                          ▼                ▼
-                       Whisper          MiniCPM
-                          │                │
-                          └───────┬────────┘
-                                  │
-                                  ▼
-                              Qwen 2.5
-                                  │
-                                  ▼
-                         Structured Lab Entry
-                                  │
-                            User Review/Edit
-                                  │
-                                  ▼
-                            eLabFTW API
-                                  │
-                                  ▼
-                              eLabFTW
+                   Browser
+                      │
+                      ▼
+               Streamlit GUI
+                      │
+      ┌───────────────┼────────────────┐
+      │               │                │
+      ▼               ▼                ▼
+ Text input      Audio files         Images
+      │               │                │
+      │               ▼                ▼
+      │            Whisper          MiniCPM
+      │               │                │
+      └───────────────┼────────────────┘
+                      │
+                      ▼
+                   Qwen 2.5
+                      │
+                      ▼
+              Structured Lab Entry
+                      │
+                      ▼
+               User Review/Edit
+                      │
+                      ▼
+                 eLabFTW API
+                      │
+                      ▼
+                   eLabFTW
 
+                   
 Existing eLabFTW entries can also be retrieved through the API and used by the Laboratory Chat.
 
 ⸻
