@@ -105,8 +105,9 @@ Semantic retrieval using local embeddings/vector search is planned for a future 
 
 ⸻
 
-Architecture
+## Architecture
 
+```text
                    Browser
                       │
                       ▼
@@ -136,24 +137,23 @@ Architecture
                       │
                       ▼
                    eLabFTW
+```
 
-                   
 Existing eLabFTW entries can also be retrieved through the API and used by the Laboratory Chat.
 
-⸻
+---
 
-Project Structure
+## Project Structure
 
-lab-assistant/
+```text
+ai-lab-assistant/
 ├── app/
 │   ├── app.py
-│   │
 │   ├── components/
 │   │   ├── chatbot.py
 │   │   ├── custom_fields.py
 │   │   ├── input.py
 │   │   └── lab_form.py
-│   │
 │   └── services/
 │       ├── ai.py
 │       ├── elabftw.py
@@ -162,19 +162,16 @@ lab-assistant/
 │       ├── rag.py
 │       ├── transcription.py
 │       └── vision.py
-│
 ├── models/
 │   └── whisper/
 │       └── base/
-│
 ├── elabftw/
 │   ├── docker-compose.yml
 │   └── data/
-│
 └── README.md
+```
 
 The exact structure may change as the project is developed.
-
 ⸻
 
 Requirements
