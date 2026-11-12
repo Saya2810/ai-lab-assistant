@@ -1,0 +1,9 @@
+# Lab Chatbot (+ shared eLabFTW client)
+streamlit>=1.46
+ollama>=0.5
+numpy>=1.26
+pandas>=2.0
+pydantic>=2.5
+requests>=2.31
+urllib3>=2.0
+python-dotenv>=1.0
