@@ -1,59 +1,27 @@
-# Python
+# secrets and local config
+.env
+deploy/elabftw/.env
+
+# generated data
+data/
+models/
+deploy/elabftw/data/
+*.db
+*.db-wal
+*.db-shm
+
+# python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
-
-# Secrets
-.env
-.env.*
-!.env.example
-*.key
-*.pem
-
-# eLabFTW runtime/database data
-elabftw/data/
-
-# AI models
-models/
-*.bin
-*.gguf
-*.safetensors
-
-# Generated images
-vision_chunks/
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.tiff
-*.tif
-*.webp
-
-#testfiles
-*.txt
-
-# Audio/video
-*.wav
-*.mp3
-*.m4a
-*.mp4
-*.mov
-
-# Databases
-*.db
-*.sqlite
-*.sqlite3
-
-# Temporary/cache files
-*.log
-*.tmp
-.cache/
 .pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
 
-# macOS
+# os / editor
 .DS_Store
-
-# IDE
-.vscode/
 .idea/
+.vscode/

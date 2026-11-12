@@ -1,0 +1,2 @@
+# Everything (assistant + chatbot + tests)
+-r requirements-dev.txt

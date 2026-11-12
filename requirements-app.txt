@@ -1,0 +1,3 @@
+# The combined app (streamlit run app.py): Lab Assistant + Lab Chatbot
+-r requirements-chatbot.txt
+-r requirements-assistant.txt
