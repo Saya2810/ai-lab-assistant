@@ -1,2 +1,0 @@
--r requirements-app.txt
-pytest>=8.0
