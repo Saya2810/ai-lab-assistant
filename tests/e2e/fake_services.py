@@ -10,7 +10,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from lab_chatbot.demo import DEMO_EXPERIMENTS
 from tests.fakes import FakeEmbedder, plan_json
+
+API_KEY = "test-key"
+SERVER_DEFAULT_LIMIT = 15  # what eLabFTW returns when no limit is given
 
 EMBEDDER = FakeEmbedder("embeddinggemma")  # the demo index is built with the same function
 
@@ -92,6 +96,19 @@ def _elab_handler(services: Services):
 
         def do_GET(self):
             path, query = self._path()
+            if self.headers.get("Authorization") != API_KEY:
+                return _json(self, {"description": "invalid API key"}, 401)
+            services.requests.append({"svc": "elab", "method": "GET", "path": path, "query": {k: v[0] for k, v in query.items()}})
+            if path == "experiments":
+                limit = int(query.get("limit", [SERVER_DEFAULT_LIMIT])[0])
+                offset = int(query.get("offset", ["0"])[0])
+                return _json(self, [dict(e) for e in DEMO_EXPERIMENTS][offset : offset + limit])
+            if path.startswith("experiments/") and path.split("/")[1].isdigit():
+                found = [e for e in DEMO_EXPERIMENTS if str(e["id"]) == path.split("/")[1]]
+                if found:
+                    return _json(self, found[0])
+            if path == "users/me":
+                return _json(self, {"id": 1, "team": 1})
             if path in LISTS:  # eLabFTW paginates: everything is on the first page
                 return _json(self, LISTS[path] if int(query.get("offset", ["0"])[0]) == 0 else [])
             if path == "experiments_templates/5":
@@ -100,11 +117,15 @@ def _elab_handler(services: Services):
 
         def do_POST(self):
             path, _ = self._path()
+            if self.headers.get("Authorization") != API_KEY:
+                return _json(self, {"description": "invalid API key"}, 401)
             services.requests.append({"svc": "elab", "method": "POST", "path": path, "body": self._body()})
             _json(self, {}, 201, {"Location": f"{services.elab_url}/{path}/42"})
 
         def do_PATCH(self):
             path, _ = self._path()
+            if self.headers.get("Authorization") != API_KEY:
+                return _json(self, {"description": "invalid API key"}, 401)
             services.requests.append({"svc": "elab", "method": "PATCH", "path": path, "body": self._body()})
             _json(self, {})
 
@@ -117,7 +138,7 @@ def _ollama_handler(services: Services):
             pass
 
         def do_GET(self):
-            _json(self, {"models": [{"name": "qwen2.5:7b"}, {"name": "embeddinggemma:latest"}]})
+            _json(self, {"models": [{"name": n, "model": n} for n in ("qwen2.5:7b", "embeddinggemma:latest")]})  # real Ollama sends both keys
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")

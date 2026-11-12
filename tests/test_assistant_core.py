@@ -294,7 +294,46 @@ def test_template_fields_from_string_or_dict_metadata(wired):
 def test_create_experiment_returns_id_from_location(wired):
     session = wired([FakeResponse(201, headers={"Location": "https://x/api/v2/experiments/88"})])
     assert elab_api.create_experiment(template_id=4) == 88
-    assert session.calls[0][2]["json"] == {"template": 4}
+    assert session.calls[0][2]["json"] == {"template": 4, "category_id": 4}  # both names: old and current API
+
+
+def test_team_lists_fall_back_to_the_documented_paths(wired):
+    session = wired([
+        FakeResponse(404, {"description": "no such path"}),         # teams/current/experiments_categories
+        FakeResponse(200, {"id": 7, "team": 3}),                    # users/me
+        FakeResponse(200, [{"id": 1, "title": "Raman"}]),           # teams/3/experiments_categories
+        FakeResponse(200, []),
+    ])  # fmt: skip
+    assert [c["title"] for c in elab_api.get_experiment_categories()] == ["Raman"]
+    assert [call[1].rsplit("/api/v2/", 1)[1] for call in session.calls][:3] == [
+        "teams/current/experiments_categories", "users/me", "teams/3/experiments_categories",
+    ]
+
+
+def test_tags_fall_back_to_team_tags(wired):
+    session = wired([FakeResponse(404, {}), FakeResponse(200, [{"id": 1, "tag": "raman"}]), FakeResponse(200, [])])
+    assert elab_api.get_tags() == [{"id": 1, "tag": "raman"}]
+    assert session.calls[1][1].endswith("/team_tags")
+
+
+def test_the_known_path_is_used_when_it_works_and_other_errors_are_not_masked(wired):
+    session = wired([FakeResponse(200, [{"id": 1, "tag": "a"}]), FakeResponse(200, [])])
+    assert elab_api.get_tags()[0]["tag"] == "a" and len(session.calls) == 2  # no fallback attempted
+
+    from shared.elabftw_client import ElabFTWError
+
+    wired([FakeResponse(401, {"description": "bad key"})])
+    with pytest.raises(ElabFTWError) as error:
+        elab_api.get_tags()
+    assert error.value.status_code == 401  # a wrong key must not look like a missing path
+
+
+def test_missing_team_in_users_me_is_a_clear_error(wired):
+    from shared.elabftw_client import ElabFTWError
+
+    wired([FakeResponse(404, {}), FakeResponse(200, {"id": 7})])
+    with pytest.raises(ElabFTWError, match="team"):
+        elab_api.get_experiment_statuses()
 
 
 def test_link_resource_sends_json_body(wired):

@@ -164,13 +164,11 @@ def cmd_eval(args, config) -> int:
 
 def cmd_doctor(args, config) -> int:
     from lab_chatbot.doctor import run_doctor
+    from shared.diagnostics import print_report
 
-    checks = run_doctor(config)
-    for check in checks:
-        print(f"{check.symbol} {check.name:<16} {check.detail}")
-    failed = [c for c in checks if c.ok is False and c.critical]
-    print("\nAll good." if not failed else f"\n{len(failed)} problem(s) to fix.")
-    return 1 if failed else 0
+    if not args.quick:
+        print("Calling the models once (the first call loads them into memory, this can take a minute) ...\n")
+    return print_report(run_doctor(config, live=not args.quick))
 
 
 def cmd_seed_demo(args, config) -> int:
@@ -217,7 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_search)
 
     sub.add_parser("stats", help="index statistics").set_defaults(func=cmd_stats)
-    sub.add_parser("doctor", help="check the whole setup").set_defaults(func=cmd_doctor)
+    doctor = sub.add_parser("doctor", help="check the whole setup (calls the models once)")
+    doctor.add_argument("--quick", action="store_true", help="do not call the models, only check that they exist")
+    doctor.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("eval", help="run a golden question set")
     p.add_argument("--golden", required=True, help="JSON file with questions and expectations")

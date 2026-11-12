@@ -20,13 +20,15 @@ Voraussetzungen: Python ≥ 3.10 (getestet mit 3.13), [Ollama](https://ollama.co
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt            # alles inkl. Tests
-# oder nur eine App:  requirements-chatbot.txt / requirements-assistant.txt
-
-ollama pull qwen2.5:7b                     # Chat-/Planner-Modell (beide Apps)
-ollama pull embeddinggemma                 # Embeddings (Chatbot)
-ollama pull minicpm-v4.6:1b                # Handschrift-OCR (Assistant, optional)
+pip install -r requirements.txt
+ollama pull qwen2.5:7b
+ollama pull embeddinggemma
+ollama pull minicpm-v4.6:1b
 ```
+
+`requirements.txt` installiert alles inkl. Tests; nur die Oberfläche: `requirements-app.txt`, nur eine Hälfte: `requirements-chatbot.txt` bzw. `requirements-assistant.txt`. `qwen2.5:7b` ist das Chat-/Planner-Modell (beide Apps), `embeddinggemma` erzeugt die Embeddings (Chatbot), `minicpm-v4.6:1b` liest Handschrift auf Fotos (Assistant, optional).
+
+> **Hinweis zur Shell:** Kopiere die Befehle ohne `#`-Kommentare. In der Standard-Shell von macOS (zsh) ist `#` in der Eingabezeile *kein* Kommentar, der Rest der Zeile würde als Argument an den Befehl gehen. In dieser README stehen deshalb keine Kommentare in den Befehlsblöcken.
 
 Audio-Transkription (Assistant, optional) läuft offline mit einem lokal abgelegten Whisper-Modell. Einmalig herunterladen:
 
@@ -37,8 +39,10 @@ python -c "from faster_whisper import download_model; download_model('base', out
 ## 2. Konfiguration
 
 ```bash
-cp .env.example .env     # dann ELABFTW_API_KEY eintragen
+cp .env.example .env
 ```
+
+Danach in `.env` mindestens `ELABFTW_API_KEY=...` eintragen (und `ELABFTW_URL`, falls dein eLabFTW nicht unter `https://localhost:8443/api/v2` läuft).
 
 Die wichtigsten Variablen (alle in `.env.example` dokumentiert; echte Umgebungsvariablen haben Vorrang vor `.env`):
 
@@ -58,11 +62,13 @@ Ein lokales eLabFTW zum Entwickeln startet `deploy/elabftw/docker-compose.exampl
 Der Chatbot bringt ein synthetisches Laborbuch mit (8 Experimente: Raman, PCR, Zellkultur, …). Es landet in einer **separaten** Datenbank und vermischt sich nie mit echten Daten. Benötigt wird nur Ollama mit den beiden Modellen.
 
 ```bash
-python -m lab_chatbot doctor                     # prüft Ollama, Modelle, Index
-python -m lab_chatbot seed-demo                  # → data/chatbot/demo.db
+python -m lab_chatbot doctor
+python -m lab_chatbot seed-demo
 python -m lab_chatbot --db data/chatbot/demo.db chat
-LAB_DB_PATH=data/chatbot/demo.db streamlit run app.py     # oder nur: … run lab_chatbot/ui.py
+LAB_DB_PATH=data/chatbot/demo.db streamlit run app.py
 ```
+
+`doctor` prüft Ollama, Modelle und Index, `seed-demo` legt `data/chatbot/demo.db` an. Statt der gemeinsamen Oberfläche geht auch `… streamlit run lab_chatbot/ui.py`.
 
 Fragen zum Ausprobieren:
 
@@ -84,13 +90,50 @@ python -m lab_chatbot --db data/chatbot/demo.db eval --full --golden lab_chatbot
 
 ## 4. Echtbetrieb
 
+### Erstinbetriebnahme mit deinem echten Ollama und eLabFTW
+
+Die automatischen Tests laufen gegen Attrappen. **Ob es bei dir funktioniert, zeigt erst dieser Ablauf**; jeder Schritt sagt dir konkret, was fehlt:
+
+1. `.env` anlegen und `ELABFTW_API_KEY` (und ggf. `ELABFTW_URL`) eintragen, siehe 2. Ollama muss laufen (`ollama serve`, oder die Ollama-App).
+2. Assistant prüfen:
+
+   ```bash
+   python -m lab_assistant doctor
+   ```
+
+   Liest Templates, Kategorien, Status, Ressourcen und Tags aus deinem eLabFTW, die Felder des ersten Templates, prüft das Textmodell (ruft es einmal auf) und meldet optionale Teile (Foto-OCR, HEIC, Audio).
+3. Chatbot prüfen:
+
+   ```bash
+   python -m lab_chatbot doctor
+   ```
+
+   Holt drei echte Experimente aus eLabFTW und **parst** sie (die Zeile `eLabFTW data` sagt, ob Titel, Datum, Text und Änderungszeit gefunden wurden), ruft Embedding- und Chat-Modell je einmal auf. Der erste Aufruf lädt die Modelle und kann eine Minute dauern; mit `--quick` werden sie nur auf Vorhandensein geprüft.
+4. Ein paar Experimente einlesen und fragen:
+
+   ```bash
+   python -m lab_chatbot sync --limit 5
+   python -m lab_chatbot search "ein Wort aus einem deiner Einträge"
+   ```
+
+   Danach `python -m lab_chatbot sync` für alle.
+5. Die Oberfläche starten:
+
+   ```bash
+   streamlit run app.py
+   ```
+
+Meldet ein Schritt ✗ oder `!`, steht der Grund und der Befehl zur Abhilfe in derselben Zeile (siehe auch 6.).
+
 ### Lab Chatbot
 
 ```bash
-python -m lab_chatbot doctor      # was fehlt? (Ollama, Modelle, API-Key, Index)
-python -m lab_chatbot sync        # eLabFTW → lokaler Index; inkrementell, beim 2. Lauf nur Änderungen
-python -m lab_chatbot chat        # Terminal-Chat; die Oberfläche: streamlit run app.py
+python -m lab_chatbot doctor
+python -m lab_chatbot sync
+python -m lab_chatbot chat
 ```
+
+`doctor` zeigt, was fehlt (Ollama, Modelle, API-Key, Index). `sync` liest eLabFTW in den lokalen Index (inkrementell, beim zweiten Lauf nur Änderungen). `chat` ist der Terminal-Chat; die Oberfläche startet mit `streamlit run app.py`.
 
 Weitere Befehle: `ask "…"`, `search "…"` (zeigt nur das Retrieval-Ranking), `stats`, `sync --full` (alles neu einlesen, z. B. nach Modellwechsel), `sync --limit 5` (zum Testen), `eval`. Die UI hat zusätzlich einen Sync-Button. Der Index muss nach neuen Einträgen in eLabFTW wieder synchronisiert werden (kein Hintergrunddienst).
 
@@ -115,20 +158,25 @@ streamlit run lab_assistant/app.py
 ## 5. Tests
 
 ```bash
-pytest                            # 292 Tests, rein offline: kein Ollama, kein eLabFTW nötig
-pytest tests/test_engine.py -v    # einzelne Datei
+pytest
+pytest tests/test_engine.py -v
 ```
+
+`pytest` führt alle Tests aus (rein offline: kein Ollama, kein eLabFTW nötig); die zweite Zeile nur eine Datei.
 
 **Optional: Browser-Test der gemeinsamen Oberfläche.** Startet `app.py` wirklich, öffnet Chromium und spielt eine ganze Sitzung durch (Eintrag schreiben → in den Chatbot wechseln → Frage stellen → zurück → Eintrag anlegen), mit Attrappen für eLabFTW und Ollama. Er prüft, dass beim Seitenwechsel nichts verloren geht.
 
 ```bash
-pip install playwright && playwright install chromium
-RUN_E2E=1 pytest tests/e2e -v     # ~25 s; ohne RUN_E2E wird er übersprungen
+pip install playwright
+playwright install chromium
+RUN_E2E=1 pytest tests/e2e -v
 ```
 
-Die Tests verwenden Fakes für Ollama (Embeddings, Chat) und eLabFTW und starten die Streamlit-Seiten headless (`streamlit.testing`). Abgedeckt sind u. a.: Paginierung/Retries des Clients, Einheiten-Umrechnung, Parser und Chunking, SQLite-Store samt Volltextindex, SQL-Filter und Aggregate (inkl. Injection-Strings), inkrementeller Sync (Änderung, Löschung, Ausfälle), Hybridsuche, Planner (LLM-Pfad, Fallbacks, Validierung), Engine (Routing, Streaming, Quellen, Zahlen-Guard, Prompt-Injection), CLI, Doctor, Eval sowie beide Oberflächen inkl. Teilfehlern beim Anlegen.
+Dauert ca. 30 s; ohne `RUN_E2E=1` wird er übersprungen. Der zweite Test startet mit leerem Index und synchronisiert über die Oberfläche (echter HTTP-Weg, authentifiziert, paginiert). **Er prüft nichts gegen dein echtes System**, dafür ist der Ablauf in 4. da.
 
-**Nicht** automatisch getestet (braucht echte Dienste): Antwortqualität der echten Modelle, das tatsächliche Verhalten deines eLabFTW (Feldnamen, Seitengröße) und die Whisper-/Vision-Modelle. Dafür gibt es den manuellen Ablauf oben (`doctor`, `sync --limit 5`, `eval`).
+Die Tests verwenden Fakes für Ollama (Embeddings, Chat) und eLabFTW und starten die Streamlit-Seiten headless (`streamlit.testing`). Abgedeckt sind u. a.: Paginierung/Retries des Clients, Einheiten-Umrechnung, Parser und Chunking, SQLite-Store samt Volltextindex, SQL-Filter und Aggregate (inkl. Injection-Strings), inkrementeller Sync (Änderung, Löschung, Ausfälle), Hybridsuche, Planner (LLM-Pfad, Fallbacks, Validierung), Engine (Routing, Streaming, Quellen, Zahlen-Guard, Prompt-Injection), CLI, Doctor, Eval, beide `doctor`-Befehle sowie beide Oberflächen inkl. Teilfehlern beim Anlegen.
+
+**Nicht** automatisch getestet (braucht echte Dienste): Antwortqualität der echten Modelle, das tatsächliche Verhalten deines eLabFTW (Feldnamen, Seitengröße) und die Whisper-/Vision-Modelle. Dafür gibt es den manuellen Ablauf oben (`doctor`, `sync --limit 5`, `eval`; Schritt-für-Schritt in 4.).
 
 ## 6. Fehlersuche
 

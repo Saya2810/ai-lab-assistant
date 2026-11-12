@@ -38,15 +38,18 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture
-def running_app(tmp_path):
+def _run_app(tmp_path, seeded: bool):
+    """Start fake eLabFTW + Ollama and ``streamlit run app.py`` against them; yields (url, services, files)."""
     from lab_chatbot.demo import seed_demo
     from lab_chatbot.store import Store
-    from tests.e2e.fake_services import EMBEDDER, Services
+    from tests.e2e.fake_services import API_KEY, EMBEDDER, Services
 
     services = Services().start()
     db = tmp_path / "demo.db"
-    seed_demo(Store(db), EMBEDDER)
+    if seeded:
+        seed_demo(Store(db), EMBEDDER)
+    else:
+        Store(db)  # creates the empty index
     first, second = tmp_path / "first.txt", tmp_path / "messung.txt"
     first.write_text("removed again right away")
     second.write_text("hello upload")
@@ -54,7 +57,7 @@ def running_app(tmp_path):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("ELABFTW_", "LAB_", "OLLAMA_"))}
     env.update(
         LAB_SKIP_DOTENV="1", LAB_DB_PATH=str(db), LAB_DATA_DIR=str(tmp_path / "data"),
-        ELABFTW_URL=services.elab_url, ELABFTW_API_KEY="test-key", OLLAMA_HOST=services.ollama_url,
+        ELABFTW_URL=services.elab_url, ELABFTW_API_KEY=API_KEY, OLLAMA_HOST=services.ollama_url,
     )  # fmt: skip
     port = free_port()
     log = open(tmp_path / "streamlit.log", "w")
@@ -78,6 +81,16 @@ def running_app(tmp_path):
         server.terminate()
         server.wait(timeout=15)
         services.stop()
+
+
+@pytest.fixture
+def running_app(tmp_path):
+    yield from _run_app(tmp_path, seeded=True)
+
+
+@pytest.fixture
+def app_with_empty_index(tmp_path):
+    yield from _run_app(tmp_path, seeded=False)
 
 
 def go(page, label: str) -> None:
@@ -190,9 +203,40 @@ def test_a_session_across_both_pages(running_app):
 
     # ---- what eLabFTW actually received
     posts = [(c["path"], c["body"]) for c in services.elab_calls("POST")]
-    assert ("experiments", {"template": 5}) in posts
+    assert ("experiments", {"template": 5, "category_id": 5}) in posts
     assert ("experiments/42/tags", {"tag": "raman"}) in posts
     assert any(path == "experiments/42/uploads" for path, _ in posts)
     patches = [c["body"] for c in services.elab_calls("PATCH")]
     assert any(b.get("title") == "Titel ANGEPASST" and "Signal stabil" in b.get("body", "") and b.get("content_type") == 2 for b in patches)
     assert any("Dr. Test" in b.get("metadata", "") and "532" in b.get("metadata", "") for b in patches)
+
+
+def test_chatbot_syncs_from_elabftw_and_answers(app_with_empty_index):
+    """First start with an empty index: the sync button reads eLabFTW (real HTTP, real client
+    libraries, paginated, authenticated), embeds through Ollama and the chatbot can answer."""
+    from playwright.sync_api import sync_playwright
+
+    url, services, _files = app_with_empty_index
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_context(viewport={"width": 1200, "height": 1000}).new_page()
+        page.goto(url)
+        page.wait_for_selector("text=Entry structure", timeout=30000)
+        go(page, "Lab Chatbot")
+        page.wait_for_selector("text=Der Index ist leer", timeout=30000)
+        assert page.locator("[data-testid=stMetricValue]").first.inner_text().strip() == "0"
+
+        page.get_by_role("button", name="Mit eLabFTW synchronisieren").click()
+        page.wait_for_selector("text=Der Index ist leer", state="detached", timeout=60000)
+        page.wait_for_timeout(1000)
+        assert page.locator("[data-testid=stMetricValue]").first.inner_text().strip() == "8"
+
+        page.get_by_test_id("stChatInputTextArea").fill(QUESTION)
+        page.keyboard.press("Enter")
+        page.wait_for_selector("text=dejustierte Faser", timeout=30000)
+        browser.close()
+
+    listing = [c for c in services.elab_calls("GET") if c["path"] == "experiments"]
+    assert listing and all("limit" in c["query"] and "offset" in c["query"] for c in listing)  # paginated
+    details = {c["path"] for c in services.elab_calls("GET") if c["path"].startswith("experiments/")}
+    assert len(details) == 8  # every experiment fetched once

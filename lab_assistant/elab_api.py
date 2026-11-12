@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from lab_assistant.formatting import normalize_math_for_elabftw
-from shared.elabftw_client import ElabFTWClient, get_client
+from shared.elabftw_client import ElabFTWClient, ElabFTWError, get_client
 
 log = logging.getLogger(__name__)
 
@@ -31,12 +31,41 @@ def _all(endpoint: str) -> list[dict]:
 # ------------------------------------------------------------------ structure
 
 
+# The paths the original app used (``teams/current/...``) are not what the API reference
+# documents (``teams/<id>/...``, ``team_tags``), and eLabFTW versions differ in what they
+# accept. So: try the known-good path first and the documented one when the server says
+# "no such path". Any other error (401, 500, network) is real and is raised as is.
+_PATH_NOT_FOUND = {400, 404, 405}
+
+
+def _team_id() -> int:
+    me = client().get("users/me")
+    team = me.get("team") if isinstance(me, dict) else None
+    if team is None:
+        raise ElabFTWError("Cannot determine your team: the response of users/me has no 'team'.")
+    return int(team)
+
+
+def _all_first(*endpoints: str | Callable[[], str]) -> list[dict]:
+    error: ElabFTWError | None = None
+    for endpoint in endpoints:
+        try:
+            return _all(endpoint() if callable(endpoint) else endpoint)
+        except ElabFTWError as exc:
+            if exc.status_code not in _PATH_NOT_FOUND:
+                raise
+            log.info("eLabFTW answered %s for a team endpoint, trying the documented path", exc.status_code)
+            error = exc
+    assert error is not None
+    raise error
+
+
 def get_experiment_categories() -> list[dict]:
-    return _all("teams/current/experiments_categories")
+    return _all_first("teams/current/experiments_categories", lambda: f"teams/{_team_id()}/experiments_categories")
 
 
 def get_experiment_statuses() -> list[dict]:
-    return _all("teams/current/experiments_status")
+    return _all_first("teams/current/experiments_status", lambda: f"teams/{_team_id()}/experiments_status")
 
 
 def get_experiment_templates() -> list[dict]:
@@ -48,7 +77,7 @@ def get_resources() -> list[dict]:
 
 
 def get_tags() -> list[dict]:
-    return _all("teams/current/tags")
+    return _all_first("teams/current/tags", "team_tags")
 
 
 def load_structure() -> dict[str, list[dict]]:
@@ -110,7 +139,10 @@ def create_experiment(template_id: int | None = None) -> int:
     Title/body/category/status are set in a separate update, because eLabFTW does
     not apply all of them when an experiment is created from a template.
     """
-    data = {"template": template_id} if template_id is not None else {}
+    # Older servers read ``template``, the current API reference calls the same thing
+    # ``category_id`` (0 = team default, -1 = empty). Unknown keys are ignored, so send both:
+    # otherwise a server that wants the other name would silently create an entry without the template.
+    data = {"template": template_id, "category_id": template_id} if template_id is not None else {}
     return ElabFTWClient.created_id(client().post("experiments", data))
 
 

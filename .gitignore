@@ -25,3 +25,15 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# more
+/elabftw/
+vision_chunks/
+references/
+*.pem
+*.key
+.env.*
+!.env.example
+.coverage
+htmlcov/
+*.log

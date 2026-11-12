@@ -12,7 +12,8 @@ test:               ## run the whole test suite (offline, no Ollama / eLabFTW ne
 e2e:                ## browser test of the combined app (needs: pip install playwright && playwright install chromium)
 	RUN_E2E=1 $(PY) -m pytest tests/e2e -v
 
-doctor:             ## check Ollama, models, eLabFTW and the index
+doctor:             ## check Ollama, models, eLabFTW and the index (both apps)
+	$(PY) -m lab_assistant doctor
 	$(PY) -m lab_chatbot doctor
 
 sync:               ## read eLabFTW into the chatbot's local index (incremental)

@@ -3,32 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
 
 from lab_chatbot.config import ChatbotConfig
 from lab_chatbot.store import Store
 from shared.config import ConfigError, ElabFTWConfig, env_str
+from shared.diagnostics import Check, model_present, ollama_checks
 
-
-@dataclass
-class Check:
-    name: str
-    ok: bool | None  # None = warning / not applicable
-    detail: str
-    critical: bool = True
-
-    @property
-    def symbol(self) -> str:
-        return "✓" if self.ok else ("!" if self.ok is None else "✗")
-
-
-def _model_present(wanted: str, installed: list[str]) -> bool:
-    for name in installed:
-        if name == wanted or name == f"{wanted}:latest":
-            return True
-        if ":" not in wanted and name.split(":")[0] == wanted:
-            return True
-    return False
+_model_present = model_present  # (kept: tests and callers use this name)
 
 
 def check_fts5() -> Check:
@@ -66,45 +47,74 @@ def check_index(config: ChatbotConfig) -> list[Check]:
 
 
 def check_ollama(config: ChatbotConfig) -> list[Check]:
-    try:
-        import ollama
-
-        listing = ollama.Client(host=config.ollama_host).list()
-        installed = [
-            (m.get("model") or m.get("name") or "") for m in listing["models"]
-        ]
-    except Exception as exc:
-        return [
-            Check(
-                "Ollama",
-                False,
-                f"not reachable at {config.ollama_host} ({type(exc).__name__}). "
-                "Start it with `ollama serve`.",
-            )
-        ]
-    checks = [Check("Ollama", True, f"reachable at {config.ollama_host}")]
-    for label, model in (("Chat model", config.chat_model), ("Embedding model", config.embed_model)):
-        present = _model_present(model, installed)
-        checks.append(
-            Check(label, present, f"{model} " + ("installed" if present else f"missing: ollama pull {model}"))
-        )
+    checks, _ready = ollama_checks(
+        config.ollama_host,
+        [("Chat model", config.chat_model, True), ("Embedding model", config.embed_model, True)],
+    )
     return checks
 
 
-def check_elabftw() -> Check:
+def check_elabftw(sample: int = 3) -> list[Check]:
+    """Reach the API, then fetch and *parse* a few real experiments: this is where a wrong
+    assumption about the field names of your eLabFTW version would show up."""
     if not env_str("ELABFTW_API_KEY"):
-        return Check(
-            "eLabFTW", None, "ELABFTW_API_KEY not set (only needed for `sync`)", critical=False
-        )
+        return [Check("eLabFTW", None, "ELABFTW_API_KEY not set (only needed for `sync`)", critical=False)]
     try:
+        from lab_chatbot.parse import parse_experiment
         from shared.elabftw_client import ElabFTWClient
 
         config = ElabFTWConfig.from_env()
-        ElabFTWClient(config).get("experiments", {"limit": 1})
-        return Check("eLabFTW", True, f"API reachable at {config.api_url}", critical=False)
+        client = ElabFTWClient(config)
+        overview = list(client.iter_paginated("experiments", max_items=sample))
+        if not overview:
+            return [Check("eLabFTW", None, f"reachable at {config.api_url}, but the experiment list is empty "
+                          "(wrong team, or an API key of a user who sees nothing?)", critical=False)]
+        checks = [Check("eLabFTW", True, f"reachable at {config.api_url}; sampled {len(overview)} experiment(s)", critical=False)]
+        records = [parse_experiment(client.get(f"experiments/{item['id']}")) for item in overview]
     except (ConfigError, Exception) as exc:  # noqa: BLE001 - report anything
-        return Check("eLabFTW", False, str(exc)[:300], critical=False)
+        return [Check("eLabFTW", False, str(exc)[:300], critical=False)]
+
+    problems = []
+    if any(not r.title for r in records):
+        problems.append("an experiment without a title")
+    if not any(r.date for r in records):
+        problems.append("no experiment has a date")
+    if not any(r.body.strip() for r in records):
+        problems.append("no experiment has a body: wrong field name?")
+    if not any(r.modified_at for r in records):
+        problems.append("no modified_at: every sync re-reads everything")
+    detail = (
+        f"parsed {len(records)}: tags {sum(len(r.tags) for r in records)}, "
+        f"measurements {sum(len(r.measurements) for r in records)}, "
+        f"body {sum(len(r.body) for r in records)} chars, e.g. #{records[0].id} \"{records[0].title[:40]}\""
+    )
+    checks.append(Check("eLabFTW data", None if problems else True, detail + (" | " + "; ".join(problems) if problems else ""), critical=False))
+    return checks
 
 
-def run_doctor(config: ChatbotConfig) -> list[Check]:
-    return [check_fts5(), *check_index(config), *check_ollama(config), check_elabftw()]
+def check_live(config: ChatbotConfig) -> list[Check]:
+    """Really call the two models once. Installed is not the same as working
+    (out of memory, wrong version, a model that is not an embedding model)."""
+    from lab_chatbot.factory import build_embedder, build_llm
+
+    checks = []
+    try:
+        vector = build_embedder(config).embed_query("Raman-Spektrum bei 532 nm")
+        checks.append(Check("Embedding call", True, f"{config.embed_model} returned a {len(vector)}-dimensional vector"))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(Check("Embedding call", False, str(exc)[:300]))
+    try:
+        reply = build_llm(config).complete([{"role": "user", "content": "Antworte nur mit dem Wort: ok"}])
+        checks.append(Check("Chat call", bool(reply.strip()), f"{config.chat_model} answered {reply.strip()[:40]!r}"))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(Check("Chat call", False, str(exc)[:300]))
+    return checks
+
+
+def run_doctor(config: ChatbotConfig, live: bool = False) -> list[Check]:
+    """``live`` also calls the models once (slow on a cold start: the model is loaded into memory)."""
+    checks = [check_fts5(), *check_index(config), *check_ollama(config), *check_elabftw()]
+    ollama_ready = all(c.ok for c in checks if c.name in ("Ollama", "Chat model", "Embedding model"))
+    if live and ollama_ready:
+        checks += check_live(config)
+    return checks

@@ -25,6 +25,21 @@ Anforderung: Lab Assistant **und** Lab Chatbot sollen in derselben Streamlit-Obe
 | `requirements-app.txt` (beide Hälften), `make app`, `make e2e`, Extra `app` in `pyproject.toml` | Wurzel |
 | Tests: 18 neue Tests (Pinning, Launcher, `embedded`, fehlende Pakete, echte `app.py` ohne API-Key, detached Dateien, Beispielfragen) + **Browser-Test** mit echtem Chromium, echtem `streamlit run app.py` und Attrappen für eLabFTW/Ollama | `tests/test_combined_app.py`, `tests/test_assistant_ui.py`, `tests/e2e/` |
 
+### 1b. Anbindung an die echten Dienste (nachträglich ergänzt)
+
+Frage: „Sind sie jetzt mit dem echten Ollama und eLabFTW verbunden?“ Ehrlich: Die Tests laufen gegen Attrappen; eine Prüfung gegen dein System ist von außen nicht möglich. Deshalb gibt es jetzt Werkzeuge, die das bei dir in einem Befehl feststellen, und ich habe die API-Annahmen gegen die offizielle OpenAPI-Spezifikation abgeglichen.
+
+| Was | Wo |
+|---|---|
+| **Abgleich mit der API-Doku** (OpenAPI v2): `tags` ist ein String (Trennzeichen offen, wird in allen Formen erkannt), Listenfelder `body`, `metadata`, `modified_at`, `category_title`, `status_title`, `fullname` stimmen; `limit` Standard 15, `offset` vorhanden; `Location`-Header nach dem Anlegen stimmt; Upload multipart mit `comment` stimmt | – |
+| **Abweichung 1:** Beim Anlegen aus einem Template nennt die aktuelle Doku den Schlüssel `category_id`, der alte Code (und mein Port davon) sendete `template`. Auf einem aktuellen Server (`elabimg:stable`) hätte das Template stillschweigend gefehlt. Jetzt werden **beide** Schlüssel gesendet (unbekannte werden ignoriert) | `lab_assistant/elab_api.py` |
+| **Abweichung 2:** Kategorien, Status und Tags holte der alte Code über `teams/current/...`; dokumentiert sind `teams/<id>/...` und `team_tags`. Jetzt: erst der bisherige Pfad, bei 400/404/405 der dokumentierte (Team-ID aus `users/me`). Andere Fehler (401, 500, Netz) werden nicht verdeckt | `lab_assistant/elab_api.py` |
+| `python -m lab_assistant doctor` (neu): Struktur-Listen und Template-Felder aus eLabFTW, Textmodell vorhanden **und einmal aufgerufen**, Vision/Audio/HEIC als optionale Hinweise | `lab_assistant/doctor.py`, `__main__.py` |
+| `python -m lab_chatbot doctor` erweitert: holt drei echte Experimente und **parst** sie (meldet fehlende Felder: Titel, Datum, Text, Änderungszeit), ruft Embedding- und Chat-Modell je einmal auf (`--quick` lässt das weg). Ist Ollama nicht bereit, gibt es keinen zweiten, verwirrenden Fehler | `lab_chatbot/doctor.py`, `cli.py` |
+| Abschlusszeile ehrlich: „All good.“ erscheint nur, wenn auch die nicht-kritischen Prüfungen (z. B. eLabFTW) bestanden haben | `shared/diagnostics.py` (gemeinsame Bausteine beider doctor-Befehle) |
+| Browser-Test erweitert: leerer Index → Sync-Knopf → 8 Experimente → Frage; die Attrappen prüfen den API-Key, liefern wie eLabFTW nur 15 Einträge ohne `limit` und zeichnen alle Anfragen auf | `tests/e2e/` |
+| README: neue Schritt-für-Schritt-Anleitung „Erstinbetriebnahme“ (4.); **keine `#`-Kommentare mehr in Befehlsblöcken** (macOS-zsh behandelt sie als Argumente: dein Fehler `file or directory not found: #`) | `README.md` |
+
 ## 2. Gemeinsame Basis `shared/` (neu)
 
 Ersetzt die zwei getrennten, ungleich fehlerhaften Implementierungen in `services/elabftw.py`:
