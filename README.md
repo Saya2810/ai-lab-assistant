@@ -52,7 +52,7 @@ export ELABFTW_API_KEY="YOUR_API_KEY"
 
 # 5. Run
 ollama serve
-streamlit run app/app.py
+streamlit run app.py
 ```
 
 Local eLabFTW (optional): `cd elabftw && docker compose up -d`
