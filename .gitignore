@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv_old/
+
+# macOS
+.DS_Store
+
+# Local runtime data (eLabFTW database, uploads, vector store)
+data/
+elabftw/data/
+
+# Large local model files (download them, see README)
+models/
+
+# Editor
+.idea/
+.vscode/
