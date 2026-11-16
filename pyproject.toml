@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-lab-assistant"
+version = "0.1.0"
+description = "eLabFTW lab notebook: an assistant that creates entries and a chatbot that answers questions (SQL + RAG)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31",
+  "urllib3>=2.0",
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+chatbot = ["streamlit>=1.46", "ollama>=0.5", "numpy>=1.26", "pandas>=2.0", "pydantic>=2.5"]
+assistant = ["streamlit>=1.46", "ollama>=0.5", "Pillow>=10.0"]
+heic = ["pillow-heif>=0.16"]
+audio = ["faster-whisper>=1.0"]
+app = ["streamlit>=1.46", "ollama>=0.5", "numpy>=1.26", "pandas>=2.0", "pydantic>=2.5", "Pillow>=10.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+lab-chatbot = "lab_chatbot.cli:main"
+
+[tool.setuptools]
+packages = ["shared", "lab_assistant", "lab_assistant.components", "lab_chatbot"]
+
+[tool.setuptools.package-data]
+lab_chatbot = ["golden_demo.json"]
