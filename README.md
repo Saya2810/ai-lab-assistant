@@ -1,104 +1,228 @@
 # AI Lab Assistant
 
-Turn raw lab notes into structured [eLabFTW](https://www.elabftw.net) entries, and ask questions about your lab notebook. Runs locally with [Ollama](https://ollama.com).
+Zwei lokale Werkzeuge für [eLabFTW](https://www.elabftw.net), das Laborbuch-System. Alle Modelle laufen über [Ollama](https://ollama.com) auf deinem Rechner.
 
-![Python](https://img.shields.io/badge/python-3.x-blue)
+- **Lab Assistant** schreibt Einträge: Notizen, Fotos handschriftlicher Notizen oder Audio werden zu einem Entwurf, du prüfst ihn, dann wird er in eLabFTW angelegt.
+- **Lab Chatbot** beantwortet Fragen zum Laborbuch. Zahlen kommen exakt aus SQL, Inhalte aus semantischer Suche (RAG) mit Quellenangaben.
+
+Beide laufen in einer Oberfläche (`streamlit run app.py`) oder einzeln.
+
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B)
 ![Ollama](https://img.shields.io/badge/LLM-Ollama%20(local)-black)
 ![Status](https://img.shields.io/badge/status-prototype-orange)
 
-Type, dictate or photograph your notes. A local LLM drafts an entry, you review it, and only then it is saved to eLabFTW.
+> Experimenteller Prototyp. Prüfe jeden erzeugten Eintrag, bevor du ihn speicherst.
 
-> Experimental prototype. Review every generated entry before it is saved.
+| | Lab Assistant (`lab_assistant/`) | Lab Chatbot (`lab_chatbot/`) |
+|---|---|---|
+| Zweck | Notizen, Fotos, Audio → Entwurf → eLabFTW-Eintrag | Fragen an das Laborbuch |
+| Schreibt in eLabFTW | ja | nein, nur lesen |
+| Modelle | Qwen 2.5 (Text), MiniCPM (Handschrift, optional), Whisper (Audio, optional) | Qwen 2.5 (Chat), embeddinggemma (Embeddings) |
+| Einzeln starten | `streamlit run lab_assistant/app.py` | `streamlit run lab_chatbot/ui.py` oder `python -m lab_chatbot chat` |
 
-## Features
+## Installation
 
-- Input as text, audio (local Whisper) or photos of handwritten notes (local MiniCPM)
-- Qwen 2.5 drafts the entry: template, category, status, tags, resource, custom fields
-- Nothing reaches eLabFTW until you approve the draft
-- File attachments, including HEIC
-- Lab chatbot for existing entries (date- and keyword-based retrieval)
-
-## How it works
-
-```text
-Text / audio / photos
-        |
- Whisper, MiniCPM, text input
-        |
-        v
- Qwen 2.5 (Ollama) --> draft --> you review --> eLabFTW API --> eLabFTW
-```
-
-## Quick start
-
-You need Python 3, Ollama, an eLabFTW instance with an API key, and Docker if you run eLabFTW locally.
+Voraussetzungen: Python 3.10 oder neuer (getestet mit 3.13), [Ollama](https://ollama.com/download), ein eLabFTW-Server für den Echtbetrieb. Zum Ausprobieren reicht die Demo (siehe unten).
 
 ```bash
-# 1. Python environment
 python3 -m venv .venv
 source .venv/bin/activate
-pip install requests streamlit ollama faster-whisper pillow pillow-heif
-
-# 2. Models
+pip install -r requirements.txt
 ollama pull qwen2.5:7b
+ollama pull embeddinggemma
 ollama pull minicpm-v4.6:1b
-
-# 3. Whisper model (optional, audio only)
-python -c "from faster_whisper import download_model; download_model('base', output_dir='models/whisper/base')"
-
-# 4. API key
-export ELABFTW_API_KEY="YOUR_API_KEY"
-
-# 5. Run
-ollama serve
-streamlit run app.py
 ```
 
-Local eLabFTW (optional): `cd elabftw && docker compose up -d`
+Welche Requirements-Datei du brauchst:
 
-**Dev setup:** the client accepts the self-signed certificate of `https://localhost:8443` and disables TLS verification (`verify=False`). Do not use this unchanged in production.
+- `requirements.txt`: alles inklusive Tests
+- `requirements-app.txt`: nur die gemeinsame Oberfläche
+- `requirements-assistant.txt` bzw. `requirements-chatbot.txt`: nur eine Hälfte
+
+Audio-Transkription (optional) läuft offline mit einem lokal abgelegten Whisper-Modell:
+
+```bash
+python -c "from faster_whisper import download_model; download_model('base', output_dir='models/whisper/base')"
+```
+
+## Konfiguration
+
+```bash
+cp .env.example .env
+```
+
+Trage mindestens `ELABFTW_API_KEY` ein. Ist dein eLabFTW nicht unter `https://localhost:8443/api/v2` erreichbar, setze außerdem `ELABFTW_URL`. Echte Umgebungsvariablen haben Vorrang vor `.env`.
+
+| Variable | Bedeutung | Standard |
+|---|---|---|
+| `ELABFTW_API_KEY` | API-Key aus eLabFTW (Profil → API-Keys). Assistant braucht Schreibrecht, Chatbot Leserecht | Pflicht |
+| `ELABFTW_URL` | API-URL | `https://localhost:8443/api/v2` |
+| `ELABFTW_VERIFY_TLS` | `true`, `false` oder Pfad zu einem CA-Bundle | prüfen, außer bei `localhost` |
+| `OLLAMA_HOST` | Ollama-Server | `http://localhost:11434` |
+| `LAB_CHAT_MODEL` / `LAB_EMBED_MODEL` | Chatbot-Modelle | `qwen2.5:7b` / `embeddinggemma` |
+| `LAB_ASSISTANT_MODEL` / `LAB_VISION_MODEL` | Assistant-Modelle | `qwen2.5:7b` / `minicpm-v4.6:1b` |
+| `LAB_DB_PATH` | Index-Datenbank des Chatbots | `data/chatbot/labbook.db` |
+| `LAB_MIN_DENSE` | Mindest-Ähnlichkeit für Treffer | `0.30` |
+
+Alle Variablen stehen in `.env.example`.
+
+## Schnellstart ohne eLabFTW (Demo)
+
+Der Chatbot bringt ein synthetisches Laborbuch mit acht Experimenten mit. Es liegt in einer eigenen Datenbank und vermischt sich nicht mit echten Daten. Benötigt wird nur Ollama.
+
+```bash
+python -m lab_chatbot doctor
+python -m lab_chatbot seed-demo
+LAB_DB_PATH=data/chatbot/demo.db streamlit run app.py
+```
+
+Fragen zum Ausprobieren:
+
+- `Wie viele Experimente haben den Tag raman?` → SQL, exakt
+- `Welche Messungen hatten eine Wellenlänge über 600 nm?` → SQL mit Einheiten-Umrechnung
+- `Was war die maximale Belichtungszeit?` → SQL-Aggregat
+- `Warum war das Rauschen bei Probe A3 so hoch?` → RAG mit Quellen `[1]`
+- `Wie war das Rauschen bei Laserleistung über 30 mW?` → beides
+
+Mit `--explain` (CLI) oder dem Schalter „Plan & Zeiten anzeigen“ (UI) siehst du, wie die Frage verstanden wurde.
+
+## Echtbetrieb
+
+Die Tests laufen gegen Attrappen. Ob alles mit deinem Ollama und eLabFTW funktioniert, zeigt erst dieser Ablauf:
+
+1. `.env` anlegen und `ELABFTW_API_KEY` eintragen. Ollama muss laufen (`ollama serve` oder die Ollama-App).
+2. Assistant prüfen: `python -m lab_assistant doctor`. Liest Templates, Kategorien, Status, Ressourcen und Tags aus eLabFTW, prüft das Textmodell und meldet optionale Teile.
+3. Chatbot prüfen: `python -m lab_chatbot doctor`. Holt drei echte Experimente, parst sie und ruft die Modelle einmal auf. Mit `--quick` nur Vorhandensein prüfen.
+4. Wenige Experimente einlesen und testen:
+   ```bash
+   python -m lab_chatbot sync --limit 5
+   python -m lab_chatbot search "ein Wort aus einem deiner Einträge"
+   ```
+5. Alles einlesen: `python -m lab_chatbot sync`
+6. Oberfläche starten: `streamlit run app.py`
+
+Der Index wird nicht automatisch aktualisiert. Nach neuen Einträgen in eLabFTW `sync` erneut ausführen oder den Sync-Knopf in der UI nutzen.
+
+## Lab Assistant
+
+Start: `streamlit run lab_assistant/app.py` (oder als Seite in `app.py`).
+
+1. Notizen tippen und/oder Dateien hochladen. Fotos werden per OCR gelesen, Audio transkribiert, andere Dateien als Anhang angehängt. Der erkannte Text ist editierbar.
+2. „Generate laboratory entry“ erzeugt einen Entwurf. Das Modell wählt nie Template, Kategorie, Status oder Tags. Das tust du im Formular.
+3. Formular prüfen, inklusive Custom Fields des Templates, dann „Create lab entry“.
+
+Die App markiert Zahlen, die im Entwurf stehen, aber nicht in deinen Quellen vorkommen.
+
+## Lab Chatbot
+
+```bash
+python -m lab_chatbot doctor
+python -m lab_chatbot sync
+python -m lab_chatbot chat
+```
+
+Weitere Befehle:
+
+- `ask "…"`: eine Frage
+- `search "…"`: nur das Retrieval-Ranking, ohne Antwort
+- `stats`: Index-Statistik
+- `sync --full`: alles neu einlesen, zum Beispiel nach einem Modellwechsel
+- `sync --limit 5`: nur die ersten Experimente, zum Testen
+- `eval --golden <datei>`: Golden-Set laufen lassen
+- `seed-demo`: Demo-Laborbuch anlegen
+
+Intern entscheidet ein Planner pro Frage, ob SQL, Hybridsuche (Vektoren plus Stichwörter) oder beides nötig ist. Details in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Gemeinsame Oberfläche
+
+`streamlit run app.py` zeigt Lab Assistant und Lab Chatbot als zwei Seiten in der Seitenleiste. Beim Wechsel bleiben Eingaben, Chatverlauf und Seitenleisten-Schalter erhalten. Hochgeladene Dateien werden als „detached“ weitergeführt und lassen sich mit „Remove this file“ entfernen.
+
+## Make-Befehle
+
+```bash
+make install     # alle Requirements installieren
+make test        # Test-Suite, offline
+make app         # gemeinsame Oberfläche
+make chatbot     # nur Chatbot-Oberfläche
+make assistant   # nur Assistant-Oberfläche
+make sync        # Chatbot-Index aktualisieren
+make doctor      # beide Diagnosen
+make demo        # Demo-Laborbuch plus Golden-Set
+make e2e         # Browser-Test (braucht playwright)
+```
+
+## Lokales eLabFTW (optional)
+
+```bash
+cd deploy/elabftw
+cp .env.example .env
+docker compose -f docker-compose.example.yml up -d
+```
+
+Die Secrets stehen in `deploy/elabftw/.env`. Die Datei ist nicht im Repo und wird nicht committet. eLabFTW läuft danach unter `https://localhost:8443`.
+
+## Tests
+
+```bash
+pytest
+```
+
+Die Tests laufen komplett offline, ohne Ollama und ohne eLabFTW. Sie nutzen Fakes und prüfen unter anderem Client, Einheiten, Parser, Chunking, SQL-Filter, Sync, Hybridsuche, Planner, Engine und beide Oberflächen.
+
+Browser-Test der gemeinsamen Oberfläche (startet `app.py` mit Chromium, Attrappen für eLabFTW und Ollama):
+
+```bash
+pip install playwright
+playwright install chromium
+RUN_E2E=1 pytest tests/e2e -v
+```
+
+## Fehlersuche
+
+| Meldung | Lösung |
+|---|---|
+| „Ollama is not reachable“ | `ollama serve` starten, `OLLAMA_HOST` prüfen |
+| „Ollama has no model …“ | `ollama pull <modell>` mit dem Namen aus der Meldung |
+| „ELABFTW_API_KEY is not set“ | `.env` anlegen |
+| „TLS verification failed“ | `ELABFTW_VERIFY_TLS=false` (nur lokal) oder CA-Pfad angeben |
+| „Refusing to delete everything“ | eLabFTW lieferte 0 Experimente, der Index ist aber gefüllt. Falscher Key oder Team? Nur `--force-empty` leert trotzdem |
+| Index leer | `python -m lab_chatbot sync` oder `seed-demo` |
+| Zu wenige oder zu viele Treffer | `search` zeigt Scores, dann `LAB_MIN_DENSE` anpassen |
 
 ## Privacy
 
-Ollama, Qwen, MiniCPM, Whisper, Streamlit and eLabFTW can all run on your own machine, so experiment data does not have to leave it. Security still depends on your setup: network, authentication, backups and eLabFTW permissions.
+Ollama, die Modelle, Whisper, Streamlit und eLabFTW können alle auf deinem Rechner laufen. Experimentdaten müssen dann nicht an externe KI-APIs. Die Sicherheit hängt von deinem Setup ab: Netzwerk, Authentifizierung, Backups und eLabFTW-Rechte.
 
-## Scientific integrity
+Der Index ist für einen Benutzer gedacht. Wer den Chatbot bedient, sieht alles, was der API-Key sehen darf. Es gibt keine Rechteprüfung pro Nutzer.
 
-- The model only uses the material you supply.
-- It does not invent measurements, silently fix uncertain OCR or silently correct calculations.
-- It keeps conflicting sources, units and numbers, and separates measurements from theoretical values.
-- OCR can misread digits, signs, exponents and units. Check every entry before saving.
+## Wissenschaftliche Integrität
 
-## Status
+- Die Modelle nutzen nur das Material, das du angibst.
+- Sie erfinden keine Messwerte, korrigieren unsichere OCR nicht stillschweigend und rechnen nicht selbst. Zählungen und Aggregate kommen aus SQL.
+- Widersprüchliche Quellen, Einheiten und Zahlen bleiben erhalten. Messwerte werden von theoretischen Werten getrennt.
+- OCR kann Ziffern, Vorzeichen, Exponenten und Einheiten falsch lesen. Prüfe jeden Eintrag vor dem Speichern.
 
-**Implemented**
+## Bekannte Grenzen
 
-- eLabFTW API: entries, templates, categories, statuses, tags, resources, custom fields, attachments
-- Local Qwen, Whisper and handwriting recognition, HEIC support
-- Streamlit UI and first version of the lab notebook chatbot
+- Nicht gegen einen echten eLabFTW-Server getestet. Die Feldnamen der API-Antworten werden defensiv geparst.
+- Aggregate lassen sich nicht mit einer semantischen Bedingung kombinieren.
+- Unbekannte Einheiten werden nur untereinander verglichen, nie geraten.
+- Der Schwellwert `LAB_MIN_DENSE=0.30` ist ein Startwert. Mit eigenen Fragen und `eval` nachjustieren.
+- Die gemeinsame Oberfläche ist mit Streamlit 1.67 getestet. Ältere Versionen sind ungeprüft.
 
-**Planned**
+## Struktur
 
-- Multi-file input and better OCR conflict handling
-- Local embeddings, semantic search and better RAG
-- PDF and attachment indexing
-- Structured measurement database and text-to-SQL
-- Multi-user authentication and per-user eLabFTW credentials
-- Central server deployment with HTTPS and autostart
+```text
+app.py            gemeinsamer Einstieg (Navigation)
+shared/           eLabFTW-Client (Retries, Paginierung, TLS) und Konfiguration
+lab_assistant/    Streamlit-App: Eingabe, Entwurf, Formular, Anlegen
+lab_chatbot/      Chatbot: Store, Sync, SQL, Retrieval, Planner, Engine, CLI, UI
+tests/            pytest-Suite, tests/e2e für den Browser-Test
+deploy/elabftw/   Beispiel-docker-compose ohne Secrets
+docs/             Architektur
+```
 
-## Contributing
+Lizenz: noch keine. Frag den Maintainer, bevor du den Code wiederverwendest. Vor externen Beiträgen sollte eine Lizenz (z. B. MIT oder Apache-2.0) ergänzt werden.
 
-Helpful areas:
-
-- OCR and transcription quality on real handwritten notes
-- eLabFTW integration (templates, custom fields, attachments)
-- Retrieval (semantic search, RAG)
-- Security: TLS verification, authentication, per-user credentials
-- Tests and docs
-
-Open an issue before larger changes. Keep pull requests small and focused.
-
-## License
-
-No license yet. Ask the maintainer before reusing the code. A license (e.g. MIT or Apache-2.0) should be added before accepting outside contributions.
+Beiträge sind willkommen, zum Beispiel bei OCR und Transkription echter handschriftlicher Notizen, eLabFTW-Integration, Retrieval und Sicherheit (TLS, Authentifizierung, Rechte pro Nutzer). Öffne vorher ein Issue für größere Änderungen und halte Pull Requests klein.
