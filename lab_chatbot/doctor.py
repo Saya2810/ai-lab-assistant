@@ -49,7 +49,11 @@ def check_index(config: ChatbotConfig) -> list[Check]:
 def check_ollama(config: ChatbotConfig) -> list[Check]:
     checks, _ready = ollama_checks(
         config.ollama_host,
-        [("Chat model", config.chat_model, True), ("Embedding model", config.embed_model, True)],
+        [
+            ("Chat model", config.chat_model, True),
+            ("Embedding model", config.embed_model, True),
+            ("Vision model", config.vision_model, config.index_images),
+        ],
     )
     return checks
 

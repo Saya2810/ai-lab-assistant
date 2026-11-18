@@ -1,9 +1,10 @@
 # Lab Chatbot (+ shared eLabFTW client)
-streamlit>=1.46
-ollama>=0.5
-numpy>=1.26
-pandas>=2.0
-pydantic>=2.5
-requests>=2.31
-urllib3>=2.0
-python-dotenv>=1.0
+streamlit>=1.46,<2
+ollama>=0.5,<1
+numpy>=1.26,<3
+pandas>=2.0,<3
+pydantic>=2.5,<3
+Pillow>=10.0,<13           # reading images (chat uploads, LAB_INDEX_IMAGES)
+requests>=2.31,<3
+urllib3>=2.0,<3
+python-dotenv>=1.0,<2

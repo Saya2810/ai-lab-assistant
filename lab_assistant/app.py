@@ -45,8 +45,8 @@ def render_app(
     (the launcher owns the page config and the navigation)."""
     config = config or AssistantConfig.from_env()
     if not embedded:
-        st.set_page_config(page_title="Lab Assistant", page_icon="🧪")
-    st.title("🧪 Lab Assistant")
+        st.set_page_config(page_title="Lab Assistant")
+    st.title("Lab Assistant")
     st.write("Create laboratory documentation from text and uploaded files.")
 
     try:

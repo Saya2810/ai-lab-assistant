@@ -124,10 +124,21 @@ Beibehalten, weil gut: die Integritäts-Regeln im Prompt (nichts erfinden/korrig
 
 `tests/` (offline, mit Fakes): Client, Einheiten, Parser/Chunking, Store/SQL, Sync, Retrieval, Planner, Engine, CLI/Doctor/Eval, beide Streamlit-Oberflächen headless, Assistant-Kern. Beim Schreiben der Tests wurden und sind echte Fehler aufgefallen und behoben worden, u. a.: zu große Mathe-/Code-Blöcke wurden mitten in der Formel zerschnitten; ein Absatz direkt vor einem Codeblock wurde mit ihm verschmolzen; „in“ ließ deutsche Kurzfragen als Englisch erscheinen; deutsche Flexion („nachjustierte“ ↔ „Nachjustieren“) fand die Stichwortsuche nicht; der Regel-Planner erkannte keine Messwert-Bedingungen; `stats` umging die Factory.
 
-## 7. Bewusst nicht getan / offen
+## 7. Stabilität, große Datenmengen, Bilder
+
+* **Timeouts:** Alle Ollama-Clients entstehen in `shared/ollama.py` mit Timeout (`LAB_OLLAMA_TIMEOUT`, Standard 300 s) und werden wiederverwendet. Vorher konnte ein hängendes Ollama die Oberfläche unbegrenzt blockieren, und der Assistant baute pro Anfrage einen neuen Client.
+* **Große Indizes:** Lange ID-Listen (z. B. „alle Experimente einer Kategorie“) liefen ab 32.766 IDs in das Parameterlimit von SQLite. Sie gehen jetzt als ein JSON-Parameter. Vektoren laden ohne Zwischenkopie, die Suche nimmt `argpartition` statt Vollsortierung. Neue Indizes auf Kategorie, Status und Embedding-Modell. SQLite-Pragmas für WAL-Betrieb.
+* **Bilder im Chat:** Bilder lassen sich an Fragen anhängen (`engine.ask_stream(..., images=[...])`, Chat-Eingabe mit Datei-Upload, Größenlimit `LAB_MAX_IMAGE_MB`).
+* **Bildanhänge im Index:** `LAB_INDEX_IMAGES=true` liest Bildanhänge beim Sync. Ein Cache pro Datei-Hash verhindert doppelte Modellaufrufe, ein kaputtes Bild überspringt nur sich selbst.
+* **Gruppenbetrieb:** In der Oberfläche läuft nur ein Sync gleichzeitig.
+* **Antwortsprache** wird ausdrücklich im Prompt genannt (das 7B-Modell antwortete sonst teils englisch auf deutsche Fragen).
+* **Versionsgrenzen** nach oben für alle Abhängigkeiten, **CI** (`.github/workflows/tests.yml`) mit Python 3.10 und 3.12.
+* Emojis aus den Oberflächen entfernt. Der Doctor-Test hing vom lokalen Whisper-Modell ab, Audio ist jetzt immer optional.
+
+## 8. Bewusst nicht getan / offen
 
 * Neue Eingabefelder im Assistant müssen in `lab_assistant/state.py` eingetragen werden, damit sie den Seitenwechsel überleben (Buttons und Upload-Feld ausgenommen).
 * `AppTest` kann zwischen `st.Page`-Funktionen nicht wechseln; der echte Seitenwechsel wird nur vom optionalen Browser-Test (`RUN_E2E=1`) abgedeckt.
 * Kein Test gegen echten eLabFTW-/Ollama-Betrieb (siehe README „Bekannte Grenzen“).
 * Keine Rechteprüfung pro Nutzer im Chatbot-Index.
-* Kein Reranker, kein Hintergrund-Sync, keine Anhänge/Ressourcen im Index.
+* Kein Reranker, kein Hintergrund-Sync, keine PDF-Anhänge oder Ressourcen im Index (Bildanhänge optional, siehe 7).

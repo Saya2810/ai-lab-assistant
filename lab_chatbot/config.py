@@ -12,6 +12,15 @@ from shared.config import (
     env_int,
     env_str,
 )
+from shared.ollama import ollama_timeout
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = env_str(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on", "ja")
+
 
 
 @dataclass(frozen=True)
@@ -27,6 +36,11 @@ class ChatbotConfig:
     history_turns: int
     default_language: str
     site_url: str
+    ollama_timeout: float = 300.0
+    vision_model: str = "minicpm-v4.6:1b"
+    index_images: bool = False
+    max_image_mb: float = 20.0
+    max_images_per_experiment: int = 10
 
     @classmethod
     def from_env(cls, db_path: str | Path | None = None) -> "ChatbotConfig":
@@ -44,4 +58,9 @@ class ChatbotConfig:
             history_turns=env_int("LAB_HISTORY_TURNS", 3),
             default_language=env_str("LAB_DEFAULT_LANGUAGE", "de"),
             site_url=elab_site_url(),
+            ollama_timeout=ollama_timeout(),
+            vision_model=env_str("LAB_VISION_MODEL", "minicpm-v4.6:1b"),
+            index_images=env_bool("LAB_INDEX_IMAGES", False),
+            max_image_mb=env_float("LAB_MAX_IMAGE_MB", 20.0),
+            max_images_per_experiment=env_int("LAB_MAX_IMAGES_PER_EXPERIMENT", 10),
         )

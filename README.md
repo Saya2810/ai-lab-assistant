@@ -64,6 +64,9 @@ Trage mindestens `ELABFTW_API_KEY` ein. Ist dein eLabFTW nicht unter `https://lo
 | `LAB_ASSISTANT_MODEL` / `LAB_VISION_MODEL` | Assistant-Modelle | `qwen2.5:7b` / `minicpm-v4.6:1b` |
 | `LAB_DB_PATH` | Index-Datenbank des Chatbots | `data/chatbot/labbook.db` |
 | `LAB_MIN_DENSE` | Mindest-Ähnlichkeit für Treffer | `0.30` |
+| `LAB_OLLAMA_TIMEOUT` | Sekunden, bis eine hängende Ollama-Anfrage abbricht | `300` |
+| `LAB_INDEX_IMAGES` | Bildanhänge beim Sync mit dem Bildmodell lesen und durchsuchbar machen | `false` |
+| `LAB_MAX_IMAGE_MB` | Größere Bilder werden übersprungen (Sync) oder abgelehnt (Chat) | `20` |
 
 Alle Variablen stehen in `.env.example`.
 
@@ -132,6 +135,27 @@ Weitere Befehle:
 - `eval --golden <datei>`: Golden-Set laufen lassen
 - `seed-demo`: Demo-Laborbuch anlegen
 
+### Bilder
+
+- **Im Chat:** Bild (Foto, Screenshot, Plot, Gel, Notizseite) an die Frage anhängen. Das Bildmodell (`LAB_VISION_MODEL`) liest Text, Achsen und Werte. Die Antwort zitiert das Bild als eigene Quelle und nennt passende Experimente aus dem Laborbuch getrennt davon. Ohne Fragetext lautet die Frage: „Was zeigt dieses Bild?“
+- **Im Index:** Mit `LAB_INDEX_IMAGES=true` liest `sync` auch Bildanhänge der Experimente und hängt den gelesenen Text an den Eintrag. Lesungen werden pro Datei-Hash gespeichert, ein unverändertes Bild geht nie zweimal ans Modell. Der erste Sync nach dem Einschalten liest alle Bilder und dauert entsprechend (grob 2 bis 10 s pro Bild).
+
+Das Bildmodell liest nicht fehlerfrei. Unsicheres markiert es mit `[unclear]`. Werte aus Bildern vor der Verwendung prüfen.
+
+### Große Datenmengen
+
+Getestet mit einem synthetischen Index aus 50.000 Experimenten und 200.000 Textabschnitten (768-dimensionale Vektoren): Laden der Vektoren rund 1 s nach jedem Sync, eine Suche rund 0,25 s, rund 0,6 GB RAM für die Vektoren. Als Faustregel gilt: Speicher ≈ Abschnitte × Dimension × 4 Byte. Weit über einer Million Abschnitte lohnt ein eigener Vektorindex (siehe `docs/ARCHITECTURE.md`).
+
+### Für eine Arbeitsgruppe
+
+Ein Rechner mit Ollama betreibt die Oberfläche, alle anderen öffnen sie im Browser:
+
+```bash
+streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+```
+
+Alle teilen sich einen Index. Es läuft immer nur ein Sync gleichzeitig. Streamlit hat keine Anmeldung. Die Oberfläche gehört deshalb nur ins Instituts-Netz oder hinter einen Reverse-Proxy mit Login. Jeder Nutzer sieht alles, was der API-Key des Servers sehen darf.
+
 Intern entscheidet ein Planner pro Frage, ob SQL, Hybridsuche (Vektoren plus Stichwörter) oder beides nötig ist. Details in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Gemeinsame Oberfläche
@@ -168,7 +192,7 @@ Die Secrets stehen in `deploy/elabftw/.env`. Die Datei ist nicht im Repo und wir
 pytest
 ```
 
-Die Tests laufen komplett offline, ohne Ollama und ohne eLabFTW. Sie nutzen Fakes und prüfen unter anderem Client, Einheiten, Parser, Chunking, SQL-Filter, Sync, Hybridsuche, Planner, Engine und beide Oberflächen.
+Die Tests laufen komplett offline, ohne Ollama und ohne eLabFTW. GitHub Actions führt sie bei jedem Push auf `main` und bei jedem Pull Request aus (Python 3.10 und 3.12). Sie nutzen Fakes und prüfen unter anderem Client, Einheiten, Parser, Chunking, SQL-Filter, Sync, Hybridsuche, Planner, Engine und beide Oberflächen.
 
 Browser-Test der gemeinsamen Oberfläche (startet `app.py` mit Chromium, Attrappen für eLabFTW und Ollama):
 
@@ -189,6 +213,8 @@ RUN_E2E=1 pytest tests/e2e -v
 | „Refusing to delete everything“ | eLabFTW lieferte 0 Experimente, der Index ist aber gefüllt. Falscher Key oder Team? Nur `--force-empty` leert trotzdem |
 | Index leer | `python -m lab_chatbot sync` oder `seed-demo` |
 | Zu wenige oder zu viele Treffer | `search` zeigt Scores, dann `LAB_MIN_DENSE` anpassen |
+| Antwort bricht nach Minuten ab | Modell lädt zu langsam: `LAB_OLLAMA_TIMEOUT` erhöhen oder kleineres Modell |
+| „Vision model failed“ / Bild wird nicht gelesen | `ollama pull minicpm-v4.6:1b` (oder `LAB_VISION_MODEL`), Format JPEG/PNG, HEIC braucht `pillow-heif` |
 
 ## Privacy
 

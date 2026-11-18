@@ -35,7 +35,8 @@ Frage ──► Planner (1 LLM-Aufruf, JSON-Schema)  ──validiert gegen──
 | `planner.py` | Absicht + Filter + Messwert-Bedingung aus der Frage; jede Angabe wird gegen den Katalog „gesnappt“ oder verworfen (mit Notiz) |
 | `engine.py` | orchestriert; `ask_stream` liefert Events `plan → tables → sources → token… → final` |
 | `prompts.py` | Antwort-Prompt (Quellen = Daten, nicht Anweisungen), zweisprachige feste Texte |
-| `embeddings.py`, `llm.py` | dünne Ollama-Adapter (Query-/Dokument-Prefix, explizites `num_ctx`, verständliche Fehler) |
+| `embeddings.py`, `llm.py` | dünne Ollama-Adapter (Query-/Dokument-Prefix, explizites `num_ctx`, verständliche Fehler); Clients aus `shared/ollama.py` mit Timeout |
+| `vision.py` | liest Bilder mit dem Bildmodell (Chat-Uploads, Bildanhänge beim Sync); hohe Seiten in 3 überlappenden Streifen, alles auf max. 1600 px verkleinert (`shared/images.py`) |
 | `cli.py`, `ui.py`, `doctor.py`, `evaluation.py`, `demo.py`, `factory.py` | Bedienung, Diagnose, Messung, Demo-Daten, Verdrahtung |
 | `state.py` | Schlüssel der Seitenleisten-Schalter, die einen Seitenwechsel in der gemeinsamen App überleben müssen |
 
@@ -55,6 +56,10 @@ Frage ──► Planner (1 LLM-Aufruf, JSON-Schema)  ──validiert gegen──
 
 **Prompt-Injection.** Laborbuchtext ist Fremdtext. Er steht in `<source>`-Blöcken, der System-Prompt erklärt ihn zu Daten, und Tags wie `</source>` im Text werden entschärft (`prompts.defang`).
 
+**Bilder als Quelle.** Ein angehängtes Bild wird vor der Planung gelesen und als Quelle mit `experiment="uploaded image"` in den Prompt gegeben. Die Laborbuchsuche läuft mit Frage plus Anfang des Bildtexts. Der Prompt verlangt, Bildwerte und Laborbuchwerte getrennt zu nennen. Bildanhänge aus eLabFTW (`LAB_INDEX_IMAGES`) werden beim Sync gelesen, an den Body gehängt und normal gechunkt. Die Lesung ist im Cache `image_texts` pro Datei-Hash und Modell gespeichert. Die Index-Signatur enthält dann das Bildmodell.
+
+**Skalierung.** Vektoren werden in eine vorab allokierte Matrix geladen (eine Kopie statt Liste plus `vstack`), nebenläufige Erstanfragen laden nur einmal. Die dichte Suche nutzt `argpartition` (O(n)) statt vollständigem Sortieren und kopiert bei großen Kandidatenmengen keine Teilmatrix. Lange ID-Listen gehen als ein JSON-Parameter (`json_each`) an SQLite statt als ein Platzhalter pro ID, sonst greift ab 32.766 IDs das Parameterlimit. Pro Verbindung: `synchronous=NORMAL` (sicher mit WAL), 64 MB Cache, 256 MB mmap. Gemessen mit 200.000 Abschnitten: Laden rund 1 s, Suche rund 0,25 s.
+
 **Inkrementeller, sicherer Sync.** Listing wird vollständig paginiert gelesen, *bevor* irgendetwas gelöscht wird. Pro Experiment passiert alles in einer Transaktion (alt raus, neu rein). Index-Signatur = Parser-/Chunker-Version + Embedding-Modell: ändert sich eines, werden alle Experimente neu eingebettet.
 
 ## Datenmodell (SQLite)
@@ -66,6 +71,7 @@ measurements(experiment_id, name, name_norm, value_text, value_num, unit, unit_n
 chunks(cid, experiment_id, idx, text, embedding BLOB, embed_model, dim)
 chunks_fts(text)            -- FTS5, rowid = chunks.cid, unicode61 remove_diacritics 2
 meta(key, value)            -- revision, last_sync, embed_model
+image_texts(key, model, text, created_at)  -- Cache der Bildlesungen (key = Datei-Hash)
 ```
 
 ## Was aus der Vorlage `rag-chatbot-from-scratch` übernommen wurde
@@ -77,4 +83,5 @@ meta(key, value)            -- revision, last_sync, embed_model
 * Anderes Embedding-Modell: `LAB_EMBED_MODEL` + ggf. Prefixe in `embeddings.PREFIXES`, dann `sync --full`.
 * Neue Einheit: eine Zeile in `units.py`.
 * Reranker: Hook wäre `retrieval.hybrid_search` (nach RRF, vor dem Cap pro Experiment).
-* Weitere Quellen (Ressourcen, Anhänge): zusätzliche Chunk-Typen in `chunking.py`, Abruf in `sync.py`.
+* Weitere Quellen (Ressourcen, PDF-Anhänge): zusätzliche Chunk-Typen in `chunking.py`, Abruf in `sync.py` (Bildanhänge: `sync._read_images`).
+* Mehr als ~1 Mio. Abschnitte: `Store.vector_data` + dichter Teil von `retrieval.hybrid_search` durch sqlite-vec oder einen ANN-Index ersetzen.

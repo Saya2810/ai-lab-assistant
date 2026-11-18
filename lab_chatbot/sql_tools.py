@@ -13,7 +13,7 @@ import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-from lab_chatbot.store import Store, norm
+from lab_chatbot.store import Store, id_list, norm
 from lab_chatbot.units import from_si, lookup_unit, to_si, unit_norm
 
 OPS = {">", ">=", "<", "<=", "=", "between"}
@@ -128,8 +128,8 @@ def build_where(filters: Filters, meas: MeasurementCond | None = None) -> tuple[
     params: list = []
 
     if filters.experiment_ids:
-        clauses.append(f"e.id IN ({','.join('?' * len(filters.experiment_ids))})")
-        params += [int(i) for i in filters.experiment_ids]
+        clauses.append("e.id IN (SELECT value FROM json_each(?))")
+        params.append(id_list(filters.experiment_ids))
     if filters.date_from or filters.date_to:
         clauses.append("e.date != ''")
     if filters.date_from:

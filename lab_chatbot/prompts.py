@@ -26,6 +26,10 @@ Rules:
 5. If sources contradict each other, report both versions with their citations.
 6. Answer in the language of the question. Be concise: short paragraphs or a short list,
    no preamble, no closing remarks.
+7. A <source experiment="uploaded image"> is a machine reading of an image the user attached
+   to this question; it may contain reading errors marked [unclear]. Describe the image ONLY
+   with values from that source. Then, separately, name notebook experiments that match and
+   say what they report. Never attribute a notebook value to the image or the other way round.
 """
 
 
@@ -42,18 +46,22 @@ def build_answer_prompt(
     semantic_query: str,
     sources: Sequence,  # objects with .n .experiment_id .text
     facts: str = "",
+    language: str = "",
 ) -> str:
     parts = []
     if facts:
         parts.append(f"<facts>\n{defang(facts)}\n</facts>")
     blocks = "\n".join(
-        f'<source id="{s.n}" experiment="{s.experiment_id}">\n{defang(s.text)}\n</source>'
+        f'<source id="{s.n}" experiment="{s.experiment_id or "uploaded image"}">\n{defang(s.text)}\n</source>'
         for s in sources
     )
     parts.append(f"<sources>\n{blocks}\n</sources>")
     parts.append(f"Question: {question}")
     if semantic_query and semantic_query.strip().casefold() != question.strip().casefold():
         parts.append(f"(Search topic: {semantic_query})")
+    name = {"de": "German", "en": "English"}.get(language)
+    if name:
+        parts.append(f"Answer in {name}.")
     return "\n\n".join(parts)
 
 
@@ -75,6 +83,9 @@ STRINGS: dict[str, dict[str, str]] = {
         ),
         "no_experiments": "Keine Experimente gefunden für: {filters}.",
         "no_passages": "Dazu habe ich keine passenden Einträge im Laborbuch gefunden.",
+        "image_question": "Was zeigt dieses Bild? Gibt es dazu passende Einträge im Laborbuch?",
+        "image_title": "Hochgeladenes Bild {n}",
+        "image_unreadable": "Ich konnte auf dem Bild nichts lesen.",
         "no_passages_but_filters": (
             "Keine passenden Textstellen gefunden. Die Filter ({filters}) treffen auf "
             "{n} Experiment(e) zu (siehe Tabelle)."
@@ -123,6 +134,9 @@ STRINGS: dict[str, dict[str, str]] = {
         ),
         "no_experiments": "No experiments found for: {filters}.",
         "no_passages": "I found no matching entries in the lab notebook.",
+        "image_question": "What does this image show? Are there related entries in the lab notebook?",
+        "image_title": "Uploaded image {n}",
+        "image_unreadable": "I could not read anything in the image.",
         "no_passages_but_filters": (
             "No matching text passages found. The filters ({filters}) match "
             "{n} experiment(s) (see table)."

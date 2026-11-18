@@ -123,15 +123,27 @@ def hybrid_search(
     dense_scores: dict[int, float] = {}
     dense_rank: list[int] = []
     data = store.vector_data(embedder.model)
+    query_vec = None
     if len(data.cids):
-        mask = np.ones(len(data.cids), dtype=bool)
-        if experiment_ids is not None:
-            mask = np.isin(data.exp_ids, np.fromiter(experiment_ids, dtype=np.int64))
-        if mask.any():
-            cids = data.cids[mask]
-            sims = data.matrix[mask] @ embedder.embed_query(query)
-            dense_scores = {int(c): float(s) for c, s in zip(cids, sims)}
-            top = np.argsort(-sims)[:dense_k]
+        if experiment_ids is None:
+            rows_idx = None
+        else:
+            wanted = np.fromiter(experiment_ids, dtype=np.int64, count=len(experiment_ids))
+            rows_idx = np.flatnonzero(np.isin(data.exp_ids, wanted))
+        if rows_idx is None or len(rows_idx):
+            query_vec = embedder.embed_query(query)
+            if rows_idx is None:
+                cids, sims = data.cids, data.matrix @ query_vec
+            elif len(rows_idx) * 2 > len(data.cids):
+                # large candidate set: one full product is cheaper than copying most rows
+                cids, sims = data.cids[rows_idx], (data.matrix @ query_vec)[rows_idx]
+            else:
+                cids, sims = data.cids[rows_idx], data.matrix[rows_idx] @ query_vec
+            # Only the top candidates are needed: argpartition is O(n), a full sort O(n log n).
+            take = min(dense_k, len(sims))
+            top = np.argpartition(-sims, take - 1)[:take]
+            top = top[np.argsort(-sims[top], kind="stable")]
+            dense_scores = {int(cids[i]): float(sims[i]) for i in top}
             dense_rank = [int(cids[i]) for i in top if sims[i] >= min_dense]
 
     # ---- lexical ranking (BM25)
@@ -140,6 +152,16 @@ def hybrid_search(
     lexical_cids = [cid for cid, _ in lexical]
     rows = store.chunk_rows(sorted(set(dense_rank) | set(lexical_cids)))
     lexical_rank = [cid for cid in lexical_cids if cid in rows and _lexical_ok(tokens, rows[cid].text)]
+    missing = [cid for cid in lexical_rank if cid not in dense_scores]
+    if missing and query_vec is not None:
+        # data.cids is sorted (ORDER BY cid), so the rows of keyword hits are found by bisection
+        wanted = np.asarray(missing, dtype=np.int64)
+        pos = np.searchsorted(data.cids, wanted)
+        pos = np.clip(pos, 0, len(data.cids) - 1)
+        found = data.cids[pos] == wanted
+        if found.any():
+            sims = data.matrix[pos[found]] @ query_vec
+            dense_scores.update({int(c): float(v) for c, v in zip(wanted[found], sims)})
 
     # ---- reciprocal rank fusion
     fused: dict[int, float] = {}

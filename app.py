@@ -32,7 +32,7 @@ def assistant_page() -> None:
     try:
         from lab_assistant.app import render_app
     except ImportError as error:  # only this page is affected
-        return _missing_package("🧪 Lab Assistant", error, "requirements-assistant.txt")
+        return _missing_package("Lab Assistant", error, "requirements-assistant.txt")
     render_app(embedded=True)
 
 
@@ -40,20 +40,20 @@ def chatbot_page() -> None:
     try:
         from lab_chatbot.ui import main
     except ImportError as error:
-        return _missing_package("💬 Lab Chatbot", error, "requirements-chatbot.txt")
+        return _missing_package("Lab Chatbot", error, "requirements-chatbot.txt")
     main(embedded=True)
 
 
 def run(assistant: Callable[[], None] = assistant_page, chatbot: Callable[[], None] = chatbot_page) -> None:
     """Page callables are injectable so tests can use fakes instead of Ollama and eLabFTW."""
-    st.set_page_config(page_title="Lab Notebook", page_icon="🧪", layout="centered")
+    st.set_page_config(page_title="Lab Notebook", layout="centered")
     # Streamlit forgets widgets of pages that are not drawn; pin them before any page runs.
     keep_assistant_state()
     keep_chatbot_state()
     navigation = st.navigation(
         [
-            st.Page(assistant, title="Lab Assistant", icon="🧪", url_path="assistant", default=True),
-            st.Page(chatbot, title="Lab Chatbot", icon="💬", url_path="chatbot"),
+            st.Page(assistant, title="Lab Assistant", url_path="assistant", default=True),
+            st.Page(chatbot, title="Lab Chatbot", url_path="chatbot"),
         ]
     )
     navigation.run()

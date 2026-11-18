@@ -71,8 +71,19 @@ def _print_answer_events(engine, question: str, history, explain: bool) -> str:
     return final.text
 
 
+def image_options(config, build_image_reader) -> dict:
+    """Sync keyword arguments for image indexing (empty when LAB_INDEX_IMAGES is off)."""
+    if not config.index_images:
+        return {}
+    return {
+        "image_reader": build_image_reader(config),
+        "max_image_bytes": int(config.max_image_mb * 1024 * 1024),
+        "max_images_per_experiment": config.max_images_per_experiment,
+    }
+
+
 def cmd_sync(args, config) -> int:
-    from lab_chatbot.factory import build_embedder, build_store
+    from lab_chatbot.factory import build_embedder, build_image_reader, build_store
     from lab_chatbot.sync import sync_labbook
     from shared.elabftw_client import get_client
 
@@ -82,6 +93,7 @@ def cmd_sync(args, config) -> int:
     report = sync_labbook(
         get_client(), build_store(config), build_embedder(config),
         full=args.full, force_empty=args.force_empty, max_items=args.limit, progress=progress,
+        **image_options(config, build_image_reader),
     )  # fmt: skip
     print(file=sys.stderr)
     print(report.summary())

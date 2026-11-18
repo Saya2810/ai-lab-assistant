@@ -61,11 +61,13 @@ class OllamaEmbedder:
         self,
         model: str = "embeddinggemma",
         host: str | None = None,
-        batch_size: int = 16,
+        batch_size: int = 32,
         query_prefix: str | None = None,
         document_prefix: str | None = None,
+        timeout: float | None = None,
     ):
         self.model = model
+        self.timeout = timeout
         self.host = host or "http://localhost:11434"
         self.batch_size = batch_size
         default_query, default_doc = next(
@@ -78,9 +80,9 @@ class OllamaEmbedder:
     @property
     def client(self):
         if self._client is None:
-            import ollama
+            from shared.ollama import get_ollama_client
 
-            self._client = ollama.Client(host=self.host)
+            self._client = get_ollama_client(self.host, self.timeout)
         return self._client
 
     def _embed(self, texts: list[str]) -> np.ndarray:

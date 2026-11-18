@@ -81,7 +81,7 @@ def check_optional(config: AssistantConfig) -> list[Check]:
     elif not config.whisper_dir.exists():
         checks.append(Check("Audio", None, f"no local Whisper model at {config.whisper_dir} (see README)", critical=False))
     else:
-        checks.append(Check("Audio", True, f"Whisper model at {config.whisper_dir}"))
+        checks.append(Check("Audio", True, f"Whisper model at {config.whisper_dir}", critical=False))
     return checks
 
 

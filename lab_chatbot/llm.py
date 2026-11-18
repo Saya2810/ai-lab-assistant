@@ -30,8 +30,10 @@ class OllamaLLM:
         num_ctx: int = 8192,
         temperature: float = 0.0,
         keep_alive: str = "10m",
+        timeout: float | None = None,
     ):
         self.model = model
+        self.timeout = timeout
         self.host = host or "http://localhost:11434"
         self.num_ctx = num_ctx
         self.temperature = temperature
@@ -41,9 +43,9 @@ class OllamaLLM:
     @property
     def client(self):
         if self._client is None:
-            import ollama
+            from shared.ollama import get_ollama_client
 
-            self._client = ollama.Client(host=self.host)
+            self._client = get_ollama_client(self.host, self.timeout)
         return self._client
 
     def _options(self) -> dict:

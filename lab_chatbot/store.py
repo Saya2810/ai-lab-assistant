@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS experiments(
     modified_at TEXT, content_hash TEXT, index_sig TEXT, synced_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_exp_date ON experiments(date);
+CREATE INDEX IF NOT EXISTS idx_exp_category ON experiments(lower(category));
+CREATE INDEX IF NOT EXISTS idx_exp_status ON experiments(lower(status));
 
 CREATE TABLE IF NOT EXISTS exp_tags(
     experiment_id INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
@@ -65,6 +67,12 @@ CREATE TABLE IF NOT EXISTS chunks(
     embedding BLOB, embed_model TEXT, dim INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_exp ON chunks(experiment_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_model ON chunks(embed_model, dim);
+
+CREATE TABLE IF NOT EXISTS image_texts(
+    key TEXT NOT NULL, model TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT,
+    PRIMARY KEY(key, model)
+);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
     USING fts5(text, tokenize='unicode61 remove_diacritics 2');
@@ -76,6 +84,17 @@ def norm(text: object) -> str:
     import unicodedata
 
     return " ".join(unicodedata.normalize("NFKC", str(text)).casefold().split())
+
+
+def id_list(ids) -> str:
+    """Ids as one JSON parameter for ``IN (SELECT value FROM json_each(?))``.
+
+    One bound parameter instead of one per id: SQLite limits the number of
+    parameters per statement, so ``IN (?, ?, ...)`` breaks on large candidate sets.
+    """
+    import json
+
+    return json.dumps([int(i) for i in ids])
 
 
 def utc_now() -> str:
@@ -111,6 +130,7 @@ _EMPTY_VECTORS = VectorData(
 )
 _vector_cache: dict[tuple[str, str], tuple[int, VectorData]] = {}
 _cache_lock = threading.Lock()
+_load_lock = threading.Lock()
 
 
 class Store:
@@ -127,6 +147,13 @@ class Store:
         con = sqlite3.connect(self.path, timeout=30)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
+        # WAL + NORMAL is crash-safe for the database file and much faster for many small
+        # writes (a sync commits once per experiment). The rest keeps hot pages in memory.
+        con.execute("PRAGMA synchronous = NORMAL")
+        con.execute("PRAGMA busy_timeout = 30000")
+        con.execute("PRAGMA temp_store = MEMORY")
+        con.execute("PRAGMA cache_size = -65536")  # 64 MB
+        con.execute("PRAGMA mmap_size = 268435456")  # 256 MB
         try:
             yield con
             con.commit()
@@ -264,6 +291,23 @@ class Store:
             con.execute("DELETE FROM experiments")  # cascades
             self._bump(con)
 
+    # ------------------------------------------------------- image text cache
+
+    def get_image_text(self, key: str, model: str) -> str | None:
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT text FROM image_texts WHERE key = ? AND model = ?", (key, model)
+            ).fetchone()
+        return row["text"] if row else None
+
+    def put_image_text(self, key: str, model: str, text: str) -> None:
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO image_texts(key, model, text, created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(key, model) DO UPDATE SET text = excluded.text",
+                (key, model, text, utc_now()),
+            )
+
     # ----------------------------------------------------------------- reads
 
     def experiment_state(self) -> dict[int, StoredState]:
@@ -312,13 +356,12 @@ class Store:
     def chunk_rows(self, cids: Sequence[int]) -> dict[int, ChunkRow]:
         if not cids:
             return {}
-        marks = ",".join("?" * len(cids))
         with self.connect() as con:
             rows = con.execute(
-                f"SELECT c.cid, c.experiment_id, c.idx, c.text, e.title, e.date "
-                f"FROM chunks c JOIN experiments e ON e.id = c.experiment_id "
-                f"WHERE c.cid IN ({marks})",
-                list(map(int, cids)),
+                "SELECT c.cid, c.experiment_id, c.idx, c.text, e.title, e.date "
+                "FROM chunks c JOIN experiments e ON e.id = c.experiment_id "
+                "WHERE c.cid IN (SELECT value FROM json_each(?))",
+                (id_list(cids),),
             ).fetchall()
         return {
             r["cid"]: ChunkRow(
@@ -333,13 +376,13 @@ class Store:
 
         if not experiment_ids:
             return []
-        marks = ",".join("?" * len(experiment_ids))
         with self.connect() as con:
             rows = con.execute(
-                f"SELECT c.cid, c.experiment_id, c.idx, c.text, e.title, e.date FROM chunks c "
-                f"JOIN experiments e ON e.id = c.experiment_id WHERE c.experiment_id IN ({marks}) "
-                f"ORDER BY c.experiment_id, c.idx",
-                [int(i) for i in experiment_ids],
+                "SELECT c.cid, c.experiment_id, c.idx, c.text, e.title, e.date FROM chunks c "
+                "JOIN experiments e ON e.id = c.experiment_id "
+                "WHERE c.experiment_id IN (SELECT value FROM json_each(?)) "
+                "ORDER BY c.experiment_id, c.idx",
+                (id_list(experiment_ids),),
             ).fetchall()
         return [
             Hit(r["cid"], r["experiment_id"], r["idx"], r["text"], r["title"] or "",
@@ -361,25 +404,52 @@ class Store:
             cached = _vector_cache.get(key)
             if cached and cached[0] == revision:
                 return cached[1]
-        with self.connect() as con:
-            rows = con.execute(
-                "SELECT cid, experiment_id, embedding, dim FROM chunks "
-                "WHERE embed_model = ? AND embedding IS NOT NULL ORDER BY cid",
-                (embed_model,),
-            ).fetchall()
-        if not rows:
-            data = _EMPTY_VECTORS
-        else:
-            dim = rows[0]["dim"]
-            rows = [r for r in rows if r["dim"] == dim]
-            data = VectorData(
-                np.array([r["cid"] for r in rows], dtype=np.int64),
-                np.array([r["experiment_id"] for r in rows], dtype=np.int64),
-                np.vstack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows]),
-            )
-        with _cache_lock:
-            _vector_cache[key] = (revision, data)
+        with _load_lock:  # concurrent first requests load the matrix once, not once each
+            with _cache_lock:
+                cached = _vector_cache.get(key)
+                if cached and cached[0] == revision:
+                    return cached[1]
+            data = self._load_vectors(embed_model)
+            with _cache_lock:
+                _vector_cache[key] = (revision, data)
         return data
+
+    def _load_vectors(self, embed_model: str) -> VectorData:
+        """Read all vectors in one pass straight into a preallocated matrix.
+
+        Avoids a Python list of per-row arrays (twice the memory at peak), which
+        matters at hundreds of thousands of chunks.
+        """
+        with self.connect() as con:
+            head = con.execute(
+                "SELECT dim, COUNT(*) AS n FROM chunks WHERE embed_model = ? "
+                "AND embedding IS NOT NULL GROUP BY dim ORDER BY n DESC LIMIT 1",
+                (embed_model,),
+            ).fetchone()
+            if head is None:
+                return _EMPTY_VECTORS
+            dim, total = int(head["dim"]), int(head["n"])
+            cids = np.empty(total, dtype=np.int64)
+            exp_ids = np.empty(total, dtype=np.int64)
+            matrix = np.empty((total, dim), dtype=np.float32)
+            cursor = con.execute(
+                "SELECT cid, experiment_id, embedding FROM chunks "
+                "WHERE embed_model = ? AND dim = ? AND embedding IS NOT NULL ORDER BY cid",
+                (embed_model, dim),
+            )
+            filled = 0
+            while True:
+                batch = cursor.fetchmany(4096)
+                if not batch:
+                    break
+                for row in batch:
+                    if filled >= total:
+                        break
+                    cids[filled] = row[0]
+                    exp_ids[filled] = row[1]
+                    matrix[filled] = np.frombuffer(row[2], dtype=np.float32)
+                    filled += 1
+        return VectorData(cids[:filled], exp_ids[:filled], matrix[:filled])
 
     def fts_search(
         self, match: str, limit: int = 30, experiment_ids: set[int] | None = None

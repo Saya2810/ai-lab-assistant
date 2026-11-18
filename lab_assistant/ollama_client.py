@@ -1,7 +1,7 @@
 """One thin wrapper around Ollama chat, shared by the text and the vision step.
 
 It turns the usual low-level failures (server not running, model not pulled,
-timeout) into one readable ``AIError``, and always sets ``num_ctx`` explicitly:
+timeout after ``LAB_OLLAMA_TIMEOUT`` seconds) into one readable ``AIError``, and always sets ``num_ctx`` explicitly:
 Ollama silently cuts the *beginning* of a prompt that exceeds the context window,
 which would remove the system prompt's integrity rules first.
 """
@@ -45,7 +45,7 @@ def chat(
     keep_alive: Any = None,
 ) -> str:
     """Send one chat request and return the reply text."""
-    import ollama
+    from shared.ollama import get_ollama_client
 
     kwargs: dict[str, Any] = {
         "model": model,
@@ -57,7 +57,7 @@ def chat(
     if keep_alive is not None:
         kwargs["keep_alive"] = keep_alive
     try:
-        response = ollama.Client(host=config.ollama_host).chat(**kwargs)
+        response = get_ollama_client(config.ollama_host).chat(**kwargs)
     except Exception as exc:
         friendly = explain_error(exc, model, config.ollama_host)
         if friendly:

@@ -25,6 +25,7 @@ from typing import Any, Iterator, Sequence
 
 from lab_chatbot.config import ChatbotConfig
 from lab_chatbot.embeddings import Embedder
+from lab_chatbot.errors import BackendUnavailable
 from lab_chatbot.llm import LLM
 from lab_chatbot.planner import Plan, Planner, detect_language
 from lab_chatbot.prompts import ANSWER_SYSTEM, build_answer_prompt, t
@@ -38,6 +39,7 @@ from lab_chatbot.sql_tools import (
 )
 from lab_chatbot.store import Store
 from lab_chatbot.units import format_number, format_quantity
+from lab_chatbot.vision import ImageReader
 from shared.config import experiment_url
 
 Event = tuple[str, Any]
@@ -176,7 +178,9 @@ class Engine:
         llm: LLM,
         config: ChatbotConfig,
         planner: Planner | None = None,
+        image_reader: ImageReader | None = None,
     ):
+        self.image_reader = image_reader
         self.store = store
         self.embedder = embedder
         self.llm = llm
@@ -187,19 +191,33 @@ class Engine:
 
     # ----------------------------------------------------------- public API
 
-    def ask(self, question: str, history: Sequence[dict] | None = None) -> Answer:
+    def ask(
+        self,
+        question: str,
+        history: Sequence[dict] | None = None,
+        images: Sequence[bytes] | None = None,
+    ) -> Answer:
         final = None
-        for kind, payload in self.ask_stream(question, history):
+        for kind, payload in self.ask_stream(question, history, images):
             if kind == "final":
                 final = payload
         assert final is not None
         return final
 
-    def ask_stream(self, question: str, history: Sequence[dict] | None = None) -> Iterator[Event]:
+    def ask_stream(
+        self,
+        question: str,
+        history: Sequence[dict] | None = None,
+        images: Sequence[bytes] | None = None,
+    ) -> Iterator[Event]:
         started = time.perf_counter()
         latencies: dict[str, float] = {}
         question = (question or "").strip()
         language = detect_language(question, self.config.default_language)
+        images = [img for img in (images or []) if img]
+        if images:
+            yield from self._ask_with_images(question, history, images, language, started, latencies)
+            return
 
         def finish(answer: Answer) -> Event:
             latencies["total"] = round((time.perf_counter() - started) * 1000, 1)
@@ -264,7 +282,9 @@ class Engine:
         messages.append(
             {
                 "role": "user",
-                "content": build_answer_prompt(question, plan.semantic_query, sources, facts),
+                "content": build_answer_prompt(
+                    question, plan.semantic_query, sources, facts, plan.language
+                ),
             }
         )
         parts: list[str] = []
@@ -285,6 +305,93 @@ class Engine:
         yield finish(
             Answer(question, text, plan, sources, cited, tables, warnings, used_llm=True)
         )
+
+    def _ask_with_images(
+        self,
+        question: str,
+        history: Sequence[dict] | None,
+        images: Sequence[bytes],
+        language: str,
+        started: float,
+        latencies: dict[str, float],
+    ) -> Iterator[Event]:
+        """Question with attached images: read them, then answer from image + notebook.
+
+        The image text is always a source. The notebook is searched with the question plus
+        the beginning of the image text, so "which experiment does this plot belong to?"
+        finds entries that mention the same sample names or axis labels.
+        """
+
+        def finish(answer: Answer) -> Event:
+            latencies["total"] = round((time.perf_counter() - started) * 1000, 1)
+            answer.latencies = latencies
+            return ("final", answer)
+
+        question = question or t(language, "image_question")
+        if self.image_reader is None:
+            raise BackendUnavailable("No vision model configured (LAB_VISION_MODEL).")
+
+        image_sources: list[Source] = []
+        with _timer(latencies, "vision"):
+            for position, content in enumerate(images, start=1):
+                text = self.image_reader.read(content).strip()
+                if text:
+                    image_sources.append(
+                        Source(
+                            n=len(image_sources) + 1,
+                            experiment_id=0,
+                            title=t(language, "image_title", n=position),
+                            date="",
+                            text=text[: self.config.max_context_chars // 2],
+                        )
+                    )
+        yield ("images", [s.text for s in image_sources])
+        if not image_sources:
+            yield finish(Answer(question, t(language, "image_unreadable")))
+            return
+
+        recent = _clean_history(history, self.config.history_turns)
+        plan = None
+        hits: list[Hit] = []
+        if self.store.experiment_count() > 0:
+            with _timer(latencies, "plan"):
+                plan = self.planner.plan(question, recent)
+            yield ("plan", plan)
+            with _timer(latencies, "retrieve"):
+                candidates = candidate_ids(self.store, plan.filters, plan.measurement)
+                if candidates is None or candidates:
+                    query = f"{plan.semantic_query or question}\n{image_sources[0].text[:400]}"
+                    hits = hybrid_search(
+                        self.store, self.embedder, query,
+                        experiment_ids=candidates, k=self.config.top_k,
+                        min_dense=self.config.min_dense,
+                    )  # fmt: skip
+
+        notebook = self._build_sources(hits)
+        for source in notebook:
+            source.n += len(image_sources)
+        sources = image_sources + notebook
+        yield ("sources", sources)
+
+        messages = [{"role": "system", "content": ANSWER_SYSTEM}, *recent]
+        semantic = plan.semantic_query if plan else question
+        messages.append(
+            {"role": "user", "content": build_answer_prompt(question, semantic, sources, language=language)}
+        )
+        parts: list[str] = []
+        with _timer(latencies, "generate"):
+            for piece in self.llm.stream(messages):
+                parts.append(piece)
+                yield ("token", piece)
+        text = "".join(parts).strip()
+        cited = parse_citations(text, len(sources))
+        warnings = []
+        missing = unsupported_numbers(text, [s.text for s in sources] + [question])
+        if missing:
+            warnings.append(t(language, "warn_numbers", numbers=", ".join(missing[:8])))
+        if not cited and text:
+            warnings.append(t(language, "warn_uncited"))
+        yield finish(Answer(question, text, plan, sources, cited, [], warnings, used_llm=True))
 
     def retrieve_only(self, question: str, history: Sequence[dict] | None = None):
         """Plan + ranked experiment ids, no generation. Used by ``eval`` / ``search``."""

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import io
 import logging
 import time
 
 from lab_assistant.config import AssistantConfig
 from lab_assistant.ollama_client import AIError, ChatFn, chat
+from shared import images
 
 log = logging.getLogger(__name__)
 
@@ -39,50 +39,22 @@ Return only the transcription.
 """
 
 
-def _register_heif() -> None:
-    try:  # optional: only needed for iPhone HEIC photos
-        from pillow_heif import register_heif_opener
-
-        register_heif_opener()
-    except ImportError:
-        log.info("pillow-heif not installed; HEIC/HEIF images are not supported")
-
-
 def load_image(image_content: bytes):
     """Decode an upload; applies the EXIF orientation (phone photos are often rotated)."""
-    from PIL import Image, ImageOps, UnidentifiedImageError
-
-    _register_heif()
     try:
-        image = Image.open(io.BytesIO(image_content))
-        image = ImageOps.exif_transpose(image)
-    except UnidentifiedImageError as exc:
-        raise AIError(
-            "This image format cannot be read. For HEIC/HEIF photos install pillow-heif "
-            "(pip install pillow-heif), or export the photo as JPEG/PNG."
-        ) from exc
-    return image.convert("RGB") if image.mode != "RGB" else image
+        return images.load_image(image_content)
+    except images.ImageError as exc:
+        raise AIError(str(exc)) from exc
 
 
 def create_chunks(image, number_of_chunks: int = NUMBER_OF_CHUNKS, overlap: float = OVERLAP) -> list[dict]:
     """Full-width horizontal strips that overlap, so no line of text is cut in half."""
-    width, height = image.size
-    base = height / number_of_chunks
-    pad = int(base * overlap)
-    chunks = []
-    for index in range(number_of_chunks):
-        top = max(0, int(index * base) - pad)
-        bottom = min(height, int((index + 1) * base) + pad)
-        chunks.append(
-            {"index": index + 1, "image": image.crop((0, top, width, bottom)), "top": top, "bottom": bottom}
-        )
-    return chunks
+    return images.horizontal_strips(image, number_of_chunks, overlap)
 
 
 def _jpeg_bytes(image) -> bytes:
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=95)
-    return buffer.getvalue()
+    # Scaled to at most 1600 px: full phone resolution only costs memory and time.
+    return images.jpeg_bytes(image, quality=90)
 
 
 def transcribe_chunk(

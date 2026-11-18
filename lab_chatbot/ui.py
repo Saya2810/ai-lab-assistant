@@ -22,6 +22,7 @@ if str(_ROOT) not in sys.path:
 
 import json
 import logging
+import threading
 from dataclasses import asdict
 from typing import Callable
 
@@ -39,7 +40,7 @@ log = logging.getLogger("lab_chatbot.ui")
 
 UI = {
     "de": {
-        "title": "🧪 Lab Chatbot",
+        "title": "Lab Chatbot",
         "caption": "Fragen an dein eLabFTW-Laborbuch – Zahlen exakt per SQL, Inhalte per semantischer Suche.",
         "index": "Index",
         "experiments": "Experimente",
@@ -51,9 +52,13 @@ UI = {
         "sync_running": "Synchronisiere …",
         "sync_no_key": "Kein ELABFTW_API_KEY gesetzt – Sync nicht möglich (siehe .env).",
         "sync_failed": "Sync fehlgeschlagen",
+        "sync_busy": "Ein Sync läuft bereits (von jemand anderem). Bitte gleich nochmal versuchen.",
         "clear": "Chat leeren",
         "debug": "Plan & Zeiten anzeigen",
-        "placeholder": "Frage zum Laborbuch …",
+        "placeholder": "Frage zum Laborbuch, optional mit Bild …",
+        "image_reading": "Lese Bild …",
+        "image_text": "Bildinhalt (vom Bildmodell gelesen)",
+        "image_too_large": "Bild zu groß (max. {mb} MB): {name}",
         "examples": "Beispielfragen",
         "example_list": [
             "Wie viele Experimente gibt es pro Status?",
@@ -80,7 +85,7 @@ UI = {
         "link": "öffnen",
     },
     "en": {
-        "title": "🧪 Lab Chatbot",
+        "title": "Lab Chatbot",
         "caption": "Ask your eLabFTW lab notebook – numbers exact via SQL, content via semantic search.",
         "index": "Index",
         "experiments": "Experiments",
@@ -92,9 +97,13 @@ UI = {
         "sync_running": "Syncing …",
         "sync_no_key": "ELABFTW_API_KEY not set – cannot sync (see .env).",
         "sync_failed": "Sync failed",
+        "sync_busy": "A sync is already running (started by someone else). Try again shortly.",
         "clear": "Clear chat",
         "debug": "Show plan & timings",
-        "placeholder": "Ask your lab notebook …",
+        "placeholder": "Ask your lab notebook, optionally attach an image …",
+        "image_reading": "Reading image …",
+        "image_text": "Image content (read by the vision model)",
+        "image_too_large": "Image too large (max {mb} MB): {name}",
         "examples": "Example questions",
         "example_list": [
             "How many experiments are there per status?",
@@ -137,6 +146,41 @@ def describe_plan(plan, ui: dict) -> str:
     if plan.intent == "search" and plan.semantic_query:
         parts.append(f"„{plan.semantic_query}“")
     return " · ".join(parts)
+
+
+IMAGE_TYPES = ("png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif")
+
+
+def split_submission(submitted) -> tuple[str, list]:
+    """``st.chat_input`` returns a str (example buttons) or an object with .text and .files."""
+    if submitted is None:
+        return "", []
+    if isinstance(submitted, str):
+        return submitted.strip(), []
+    text = getattr(submitted, "text", None)
+    if text is None and isinstance(submitted, dict):
+        text = submitted.get("text")
+    files = getattr(submitted, "files", None)
+    if files is None and isinstance(submitted, dict):
+        files = submitted.get("files")
+    return (text or "").strip(), list(files or [])
+
+
+def read_images(files: list, max_mb: float) -> tuple[list[bytes], list[str]]:
+    """Bytes of the uploads that are within the size limit, and the names of the others."""
+    limit = int(max_mb * 1024 * 1024)
+    images, rejected = [], []
+    for upload in files:
+        size = getattr(upload, "size", None)
+        if size is not None and size > limit:
+            rejected.append(upload.name)
+            continue
+        content = upload.getvalue()
+        if len(content) > limit:
+            rejected.append(upload.name)
+        else:
+            images.append(content)
+    return images, rejected
 
 
 def answer_meta(answer: Answer) -> dict:
@@ -184,7 +228,12 @@ def render_extras(container, meta: dict, ui: dict, show_debug: bool) -> None:
         label = ui["sources"] if cited else ui["sources_retrieved"]
         container.markdown(f"**{label}**")
         for s in shown:
-            with container.expander(f"[{s['n']}] Experiment {s['experiment_id']} – {s['title']} ({s['date']})"):
+            label = (
+                f"[{s['n']}] Experiment {s['experiment_id']} – {s['title']} ({s['date']})"
+                if s["experiment_id"]
+                else f"[{s['n']}] {s['title']}"
+            )
+            with container.expander(label):
                 st.markdown(f"[eLabFTW ↗]({s['url']})" if s.get("url") else "")
                 st.text(s["text"])
     for warning in meta.get("warnings") or []:
@@ -209,7 +258,14 @@ def render_message(message: dict, ui: dict, show_debug: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_turn(engine: Engine, question: str, history: list[dict], ui: dict, show_debug: bool) -> dict:
+def run_turn(
+    engine: Engine,
+    question: str,
+    history: list[dict],
+    ui: dict,
+    show_debug: bool,
+    images: list[bytes] | None = None,
+) -> dict:
     """Stream one answer into the page; returns the message to store."""
     with st.chat_message("assistant"):
         plan_box = st.empty()
@@ -219,8 +275,15 @@ def run_turn(engine: Engine, question: str, history: list[dict], ui: dict, show_
         text = ""
         final: Answer | None = None
         try:
-            for kind, payload in engine.ask_stream(question, history):
-                if kind == "plan":
+            if images:
+                plan_box.caption(ui["image_reading"])
+            for kind, payload in engine.ask_stream(question, history, images):
+                if kind == "images":
+                    plan_box.empty()
+                    for image_text in payload:
+                        with extras_box.expander(ui["image_text"]):
+                            st.text(image_text)
+                elif kind == "plan":
                     plan_box.caption(f"{ui['understood']}: {describe_plan(payload, ui)}")
                 elif kind == "tables":
                     render_tables(tables_box, [asdict(t) for t in payload])
@@ -231,14 +294,14 @@ def run_turn(engine: Engine, question: str, history: list[dict], ui: dict, show_
                     final = payload
         except BackendUnavailable as exc:
             st.error(f"{ui['backend_error']}: {exc}")
-            return {"role": "assistant", "content": f"⚠️ {exc}"}
+            return {"role": "assistant", "content": f"{exc}"}
         except ChatbotError as exc:
             st.error(str(exc))
-            return {"role": "assistant", "content": f"⚠️ {exc}"}
+            return {"role": "assistant", "content": f"{exc}"}
         except Exception as exc:  # never leave the user with a stack trace
             log.exception("unexpected error while answering")
             st.error(f"{type(exc).__name__}: {exc}")
-            return {"role": "assistant", "content": f"⚠️ {type(exc).__name__}: {exc}"}
+            return {"role": "assistant", "content": f"{type(exc).__name__}: {exc}"}
 
         assert final is not None
         text_box.markdown(final.text)
@@ -247,8 +310,21 @@ def run_turn(engine: Engine, question: str, history: list[dict], ui: dict, show_
         return {"role": "assistant", "content": final.text, "meta": meta}
 
 
+_SYNC_LOCK = threading.Lock()  # one Streamlit server, many users: only one sync at a time
+
+
 def run_sync(engine: Engine, ui: dict, full: bool) -> None:
     """Sync from eLabFTW; the outcome is parked in session state and shown after the rerun."""
+    if not _SYNC_LOCK.acquire(blocking=False):
+        st.session_state.sync_result = ("info", ui["sync_busy"])
+        return
+    try:
+        _run_sync(engine, ui, full)
+    finally:
+        _SYNC_LOCK.release()
+
+
+def _run_sync(engine: Engine, ui: dict, full: bool) -> None:
     from lab_chatbot.sync import sync_labbook
     from shared.elabftw_client import get_client
 
@@ -258,8 +334,15 @@ def run_sync(engine: Engine, ui: dict, full: bool) -> None:
         bar.progress(min(done / total, 1.0) if total else 0.0, text=f"{ui['sync_running']} {done}/{total}")
 
     try:
+        options = {}
+        if engine.config.index_images and engine.image_reader is not None:
+            options = {
+                "image_reader": engine.image_reader,
+                "max_image_bytes": int(engine.config.max_image_mb * 1024 * 1024),
+                "max_images_per_experiment": engine.config.max_images_per_experiment,
+            }
         report = sync_labbook(
-            get_client(), engine.store, engine.embedder, full=full, progress=progress
+            get_client(), engine.store, engine.embedder, full=full, progress=progress, **options
         )
     except (ChatbotError, ElabFTWError, ConfigError) as exc:
         st.session_state.sync_result = ("error", f"{ui['sync_failed']}: {exc}")
@@ -268,7 +351,7 @@ def run_sync(engine: Engine, ui: dict, full: bool) -> None:
         bar.empty()
     text = report.summary()
     if report.failed:
-        text += "\n\n" + "\n".join(f"✗ {i}: {e}" for i, e in report.failed[:5])
+        text += "\n\n" + "\n".join(f"- {i}: {e}" for i, e in report.failed[:5])
     st.session_state.sync_result = ("warning" if report.failed else "success", text)
 
 
@@ -282,7 +365,7 @@ def render_app(engine_provider: Callable[[], Engine], config: ChatbotConfig, emb
     ``embedded=True`` when it is one page of the combined ``app.py`` (which owns the page config)."""
     ui = UI.get(config.default_language, UI["de"])
     if not embedded:
-        st.set_page_config(page_title="Lab Chatbot", page_icon="🧪", layout="centered")
+        st.set_page_config(page_title="Lab Chatbot", layout="centered")
     st.session_state.setdefault("messages", [])
     engine = engine_provider()
 
@@ -330,14 +413,23 @@ def render_app(engine_provider: Callable[[], Engine], config: ChatbotConfig, emb
                     st.session_state.pending = example
                     st.rerun()
 
-    question = st.chat_input(ui["placeholder"]) or st.session_state.pop("pending", None)
-    if question:
+    submitted = st.chat_input(
+        ui["placeholder"], accept_file="multiple", file_type=list(IMAGE_TYPES)
+    ) or st.session_state.pop("pending", None)
+    question, files = split_submission(submitted)
+    if question or files:
         examples_box.empty()
+        images, rejected = read_images(files, config.max_image_mb)
+        for name in rejected:
+            st.warning(ui["image_too_large"].format(mb=config.max_image_mb, name=name))
+        shown = question + "".join(f"\n\n[{f.name}]" for f in files)
         with st.chat_message("user"):
-            st.markdown(question)
+            st.markdown(shown)
+            for content in images:
+                st.image(content, width=320)
         history = [{"role": m["role"], "content": m["content"]} for m in messages]
-        reply = run_turn(engine, question, history, ui, show_debug)
-        messages.append({"role": "user", "content": question})
+        reply = run_turn(engine, question, history, ui, show_debug, images)
+        messages.append({"role": "user", "content": shown})
         messages.append(reply)
 
 

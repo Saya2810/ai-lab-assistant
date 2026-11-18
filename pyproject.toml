@@ -9,18 +9,18 @@ description = "eLabFTW lab notebook: an assistant that creates entries and a cha
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "requests>=2.31",
-  "urllib3>=2.0",
-  "python-dotenv>=1.0",
+  "requests>=2.31,<3",
+  "urllib3>=2.0,<3",
+  "python-dotenv>=1.0,<2",
 ]
 
 [project.optional-dependencies]
-chatbot = ["streamlit>=1.46", "ollama>=0.5", "numpy>=1.26", "pandas>=2.0", "pydantic>=2.5"]
-assistant = ["streamlit>=1.46", "ollama>=0.5", "Pillow>=10.0"]
-heic = ["pillow-heif>=0.16"]
-audio = ["faster-whisper>=1.0"]
-app = ["streamlit>=1.46", "ollama>=0.5", "numpy>=1.26", "pandas>=2.0", "pydantic>=2.5", "Pillow>=10.0"]
-dev = ["pytest>=8.0"]
+chatbot = ["streamlit>=1.46,<2", "ollama>=0.5,<1", "numpy>=1.26,<3", "pandas>=2.0,<3", "pydantic>=2.5,<3", "Pillow>=10.0,<13"]
+assistant = ["streamlit>=1.46,<2", "ollama>=0.5,<1", "Pillow>=10.0,<13"]
+heic = ["pillow-heif>=0.16,<2"]
+audio = ["faster-whisper>=1.0,<2"]
+app = ["streamlit>=1.46,<2", "ollama>=0.5,<1", "numpy>=1.26,<3", "pandas>=2.0,<3", "pydantic>=2.5,<3", "Pillow>=10.0,<13"]
+dev = ["pytest>=8.0,<10"]
 
 [project.scripts]
 lab-chatbot = "lab_chatbot.cli:main"
