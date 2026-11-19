@@ -12,7 +12,7 @@ from typing import Callable
 
 from lab_assistant import elab_api
 from lab_assistant.config import AssistantConfig
-from shared.config import ConfigError, ElabFTWConfig, env_str
+from shared.config import READ_KEY_VAR, ConfigError, ElabFTWConfig, api_key_variable
 from shared.diagnostics import Check, ollama_checks
 from shared.elabftw_client import ElabFTWError
 
@@ -22,15 +22,18 @@ STRUCTURE: list[tuple[str, Callable[[], list[dict]], bool]] = [
     ("Categories", elab_api.get_experiment_categories, True),
     ("Statuses", elab_api.get_experiment_statuses, True),
     ("Resources", elab_api.get_resources, True),
+    ("Resource categories", elab_api.get_resource_categories, True),
     ("Tags", elab_api.get_tags, True),
 ]
 
 
 def check_elabftw() -> list[Check]:
-    if not env_str("ELABFTW_API_KEY"):
-        return [Check("eLabFTW", False, "ELABFTW_API_KEY is not set: copy .env.example to .env and fill it in")]
+    key_name = api_key_variable(write=True)
+    if key_name is None:
+        return [Check("eLabFTW", False, "ELABFTW_WRITE_API_KEY (or ELABFTW_API_KEY) is not set: "
+                      "copy .env.example to .env and fill it in")]
     try:
-        config = ElabFTWConfig.from_env()
+        config = ElabFTWConfig.from_env(write=True)
     except ConfigError as exc:
         return [Check("eLabFTW", False, str(exc))]
     checks: list[Check] = []
@@ -55,7 +58,12 @@ def check_elabftw() -> list[Check]:
         except Exception as exc:  # noqa: BLE001
             checks.append(Check("Template fields", False, str(exc)[:300]))
     if checks and all(c.ok for c in checks):
-        checks.insert(0, Check("eLabFTW", True, f"reachable at {config.api_url}"))
+        checks.insert(0, Check("eLabFTW", True, f"reachable at {config.api_url}, key from {key_name}"))
+        if key_name == READ_KEY_VAR:
+            checks.insert(1, Check(
+                "Write key", None, "no ELABFTW_WRITE_API_KEY: creating entries uses ELABFTW_API_KEY, "
+                "which must then be a read/write key", critical=False,
+            ))  # fmt: skip
     return checks
 
 

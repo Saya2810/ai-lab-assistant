@@ -7,7 +7,8 @@ two rankings.
 
 Relevance gating (the old code always passed 5 entries to the LLM):
 
-* a dense hit must reach ``min_dense`` cosine similarity;
+* a hit found only by meaning must reach ``min_dense`` cosine similarity; a hit
+  found only through the planner's synonyms needs a little less, plus that match;
 * a keyword-only hit must share enough of the query's words with the chunk;
 * at most ``per_experiment`` chunks per experiment, so one long entry cannot
   crowd out everything else.
@@ -20,7 +21,7 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 
@@ -119,47 +120,85 @@ def hybrid_search(
     k: int = 6,
     dense_k: int = 30,
     lexical_k: int = 30,
-    min_dense: float = 0.30,
+    min_dense: float = 0.35,
+    support_margin: float = 0.10,
+    alt_queries: Sequence[str] = (),
+    keywords: Sequence[str] = (),
     rrf_k: int = 60,
     per_experiment: int = 2,
     reranker: Reranker | None = None,
     rerank_pool: int = 40,
 ) -> list[Hit]:
-    """Best chunks for ``query`` (optionally only inside ``experiment_ids``)."""
+    """Best chunks for ``query`` (optionally only inside ``experiment_ids``).
+
+    ``alt_queries`` are other wordings of the same question (e.g. the user's original
+    question next to the planner's search phrase); a chunk counts with its best
+    similarity to any of them. ``keywords`` (synonyms, translations) widen only the
+    keyword search, so "Schaden" can also find "verbrannt".
+
+    Relevance gate: a chunk found *only* by meaning needs ``min_dense``. A keyword match
+    on the user's own words always counts (sample names, identifiers). A match on the
+    planner's synonyms alone is weaker evidence: it needs at least
+    ``min_dense - support_margin / 2`` of meaning as well.
+    """
     if experiment_ids is not None and not experiment_ids:
         return []
 
-    # ---- dense ranking
+    # ---- dense ranking (best similarity over all wordings)
     dense_scores: dict[int, float] = {}
     dense_rank: list[int] = []
     index = store.vector_data(embedder.model)
-    query_vec = None
+    query_vecs: list[np.ndarray] = []
     if len(index):
         wanted = None
         if experiment_ids is not None:
             wanted = np.fromiter(experiment_ids, dtype=np.int64, count=len(experiment_ids))
-        query_vec = embedder.embed_query(query)
-        # With reduced dimensions the in-memory search is approximate: take a wider
-        # pool and re-score it with the full vectors, so the final order is exact.
-        pool = dense_k * 4 if index.reduced else dense_k
-        cids, sims = index.search(index.query_vector(query_vec), pool, wanted)
-        if index.reduced and len(cids):
-            exact = store.similarities(embedder.model, cids.tolist(), query_vec)
-            ranked = sorted(exact.items(), key=lambda kv: (-kv[1], kv[0]))[:dense_k]
-        else:
-            ranked = [(int(c), float(v)) for c, v in zip(cids, sims)]
+        wordings = list(dict.fromkeys(q.strip() for q in (query, *alt_queries) if q and q.strip()))
+        best: dict[int, float] = {}
+        for wording in wordings:
+            query_vec = embedder.embed_query(wording)
+            query_vecs.append(query_vec)
+            # With reduced dimensions the in-memory search is approximate: take a wider
+            # pool and re-score it with the full vectors, so the final order is exact.
+            pool = dense_k * 4 if index.reduced else dense_k
+            cids, sims = index.search(index.query_vector(query_vec), pool, wanted)
+            if index.reduced and len(cids):
+                scored = store.similarities(embedder.model, cids.tolist(), query_vec).items()
+            else:
+                scored = ((int(c), float(v)) for c, v in zip(cids, sims))
+            for cid, sim in scored:
+                best[cid] = max(best.get(cid, -1.0), sim)
+        ranked = sorted(best.items(), key=lambda kv: (-kv[1], kv[0]))[:dense_k]
         dense_scores = dict(ranked)
-        dense_rank = [cid for cid, sim in ranked if sim >= min_dense]
+        dense_rank = [cid for cid, sim in ranked if sim >= min_dense - support_margin]
 
-    # ---- lexical ranking (BM25)
-    tokens = query_tokens(query)
+    # ---- lexical ranking (BM25), widened by the keywords
+    base_tokens = query_tokens(query)
+    tokens = list(base_tokens)
+    for keyword in keywords:
+        tokens += [t for t in query_tokens(keyword) if t not in tokens]
     lexical = store.fts_search(fts_match_expression(tokens), lexical_k, experiment_ids)
     lexical_cids = [cid for cid, _ in lexical]
     rows = store.chunk_rows(sorted(set(dense_rank) | set(lexical_cids)))
     lexical_rank = [cid for cid in lexical_cids if cid in rows and _lexical_ok(tokens, rows[cid].text)]
     missing = [cid for cid in lexical_rank if cid not in dense_scores]
-    if missing and query_vec is not None:
-        dense_scores.update(store.similarities(embedder.model, missing, query_vec))
+    for query_vec in query_vecs:
+        for cid, sim in store.similarities(embedder.model, missing, query_vec).items():
+            dense_scores[cid] = max(dense_scores.get(cid, -1.0), sim)
+
+    # ---- relevance gate
+    # strong: the user's own words match;  weak: only synonyms/translations match
+    strong = {cid for cid in lexical_rank if _lexical_ok(base_tokens, rows[cid].text)}
+
+    def relevant(cid: int) -> bool:
+        dense = dense_scores.get(cid, -1.0)
+        if cid in strong or dense >= min_dense:
+            return True  # the user's own words (e.g. a sample name like "A3") always count
+        # matched only through the planner's synonyms: weaker evidence, higher bar
+        return cid in lexical_rank and dense >= min_dense - support_margin / 2
+
+    dense_rank = [cid for cid in dense_rank if relevant(cid)]
+    lexical_rank = [cid for cid in lexical_rank if relevant(cid)]
 
     # ---- reciprocal rank fusion
     fused: dict[int, float] = {}

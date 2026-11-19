@@ -12,7 +12,14 @@ import streamlit as st
 
 DEBUG_KEY = "chat_debug"
 FULL_SYNC_KEY = "chat_full_sync"
-WIDGET_KEYS = (DEBUG_KEY, FULL_SYNC_KEY)
+# the scope selection (projects, tags, categories, statuses), see lab_chatbot/scope.py
+SCOPE_KEYS = {
+    "resources": "chat_scope_resources",
+    "tags": "chat_scope_tags",
+    "categories": "chat_scope_categories",
+    "statuses": "chat_scope_statuses",
+}
+WIDGET_KEYS = (DEBUG_KEY, FULL_SYNC_KEY, *SCOPE_KEYS.values())
 
 
 def keep_widget_state() -> None:

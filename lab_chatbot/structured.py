@@ -31,6 +31,7 @@ class StructuredResult:
     text: str
     tables: list[Table] = field(default_factory=list)
     experiment_ids: list[int] = field(default_factory=list)
+    found: bool = True  # False: the SQL route had nothing (the engine may search the text)
 
 
 class StructuredAnswers:
@@ -151,7 +152,7 @@ class StructuredAnswers:
         cond = plan.measurement
         groups = aggregate_measurement(self.store, plan.filters, cond, unit=cond.unit)
         if not groups:
-            return StructuredResult(t(lang, "no_values", name=cond.name))
+            return StructuredResult(t(lang, "no_values", name=cond.name), found=False)
         lines = []
         for group in groups:
             unit = group["unit"]

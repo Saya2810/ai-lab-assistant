@@ -56,14 +56,15 @@ Trage mindestens `ELABFTW_API_KEY` ein. Ist dein eLabFTW nicht unter `https://lo
 
 | Variable | Bedeutung | Standard |
 |---|---|---|
-| `ELABFTW_API_KEY` | API-Key aus eLabFTW (Profil → API-Keys). Assistant braucht Schreibrecht, Chatbot Leserecht | Pflicht |
+| `ELABFTW_API_KEY` | API-Key aus eLabFTW (Profil → API-Keys) für den Chatbot. Leserecht genügt und ist empfohlen | Pflicht |
+| `ELABFTW_WRITE_API_KEY` | Key mit Schreibrecht nur für den Lab Assistant (legt Einträge an). Der ältere Name `GENERATE_LABBOOK_ELABFTW_API_KEY` wird auch erkannt. Fehlt er, nimmt der Assistant `ELABFTW_API_KEY` | leer |
 | `ELABFTW_URL` | API-URL | `https://localhost:8443/api/v2` |
 | `ELABFTW_VERIFY_TLS` | `true`, `false` oder Pfad zu einem CA-Bundle | prüfen, außer bei `localhost` |
 | `OLLAMA_HOST` | Ollama-Server | `http://localhost:11434` |
 | `LAB_CHAT_MODEL` / `LAB_EMBED_MODEL` | Chatbot-Modelle | `qwen2.5:7b` / `embeddinggemma` |
 | `LAB_ASSISTANT_MODEL` / `LAB_VISION_MODEL` | Assistant-Modelle | `qwen2.5:7b` / `minicpm-v4.6:1b` |
 | `LAB_DB_PATH` | Index-Datenbank des Chatbots | `data/chatbot/labbook.db` |
-| `LAB_MIN_DENSE` | Mindest-Ähnlichkeit für Treffer | `0.30` |
+| `LAB_MIN_DENSE` | Mindest-Ähnlichkeit für Treffer, die nur über die Bedeutung gefunden werden. Treffer auf Wörter der Frage zählen immer, Treffer nur über Synonyme des Planers brauchen etwas weniger | `0.35` |
 | `LAB_OLLAMA_TIMEOUT` | Sekunden, bis eine hängende Ollama-Anfrage abbricht | `300` |
 | `LAB_INDEX_IMAGES` | Bildanhänge beim Sync mit dem Bildmodell lesen und durchsuchbar machen | `false` |
 | `LAB_MAX_IMAGE_MB` | Größere Bilder werden übersprungen (Sync) oder abgelehnt (Chat) | `20` |
@@ -121,6 +122,10 @@ Start: `streamlit run lab_assistant/app.py` (oder als Seite in `app.py`).
 2. „Generate laboratory entry“ erzeugt einen Entwurf. Das Modell wählt nie Template, Kategorie, Status oder Tags. Das tust du im Formular.
 3. Formular prüfen, inklusive Custom Fields des Templates, dann „Create lab entry“.
 
+**Bestehende Einträge bleiben unangetastet.** Der Assistant legt nur neue Einträge an. Ändern darf er ausschließlich den Eintrag, den er im selben Vorgang gerade erzeugt hat, und nur bis dieser Vorgang fertig ist. Jeder andere Schreibversuch wird in der eLabFTW-Schicht abgelehnt, bevor eine Anfrage an eLabFTW geht.
+
+Neue Tags und ein neues Projekt bzw. eine neue Ressource legst du direkt im Formular an: Namen ins Feld tippen und Enter drücken. Beides entsteht in eLabFTW erst beim Anlegen des Eintrags, die Ressource wird gleich verknüpft. Gibt es mehrere Ressourcen-Kategorien, fragt das Formular nach der Kategorie. Ein vorhandener Name in anderer Groß- und Kleinschreibung wählt die vorhandene Ressource, statt eine doppelte anzulegen.
+
 Die App markiert Zahlen, die im Entwurf stehen, aber nicht in deinen Quellen vorkommen.
 
 ## Lab Chatbot
@@ -142,6 +147,18 @@ Weitere Befehle:
 - `seed-demo`: Demo-Laborbuch anlegen
 - `worker`: Index regelmäßig im Hintergrund aktualisieren (siehe „Große Datenmengen“)
 - `querylog`: Auswertung des Frageprotokolls (`--last N` listet die letzten Fragen)
+
+### Suche eingrenzen
+
+Damit Antworten nicht aus Experimenten kommen, die gar nicht gemeint sind, lässt sich der Chatbot auf einen Teil des Laborbuchs beschränken: in der Seitenleiste unter „Suche eingrenzen“ nach Projekten/Ressourcen, Tags, Kategorien und Status. Innerhalb eines Feldes reicht eins der gewählten (Tag A oder Tag B), zwischen den Feldern muss alles passen (Projekt P und Tag A). Die Eingrenzung gilt für jede Antwort, also für die Textsuche ebenso wie fürs Zählen, Auflisten und für Durchschnitte. Über dem Chat steht, worauf eingegrenzt ist und wie viele Experimente das sind. Passt die Auswahl auf kein Experiment, sagt der Chatbot das, ohne das Sprachmodell zu fragen.
+
+Auf der Kommandozeile geht dasselbe mit `--project`, `--tag`, `--category` und `--status` (jeweils mehrfach möglich), zum Beispiel:
+
+```bash
+python -m lab_chatbot ask --project "QD-PL-TEST-001" "Welche Wellenlänge wurde verwendet?"
+```
+
+Projekte sind die mit dem Experiment verknüpften Ressourcen aus eLabFTW. Neue Verknüpfungen erscheinen nach dem nächsten Sync.
 
 ### Bilder
 
@@ -248,6 +265,7 @@ RUN_E2E=1 pytest tests/e2e -v
 | „Ollama is not reachable“ | `ollama serve` starten, `OLLAMA_HOST` prüfen |
 | „Ollama has no model …“ | `ollama pull <modell>` mit dem Namen aus der Meldung |
 | „ELABFTW_API_KEY is not set“ | `.env` anlegen |
+| „You are using a read-only key to execute a write action“ | Der Assistant hat einen Nur-Lese-Key. Key mit Schreibrecht als `ELABFTW_WRITE_API_KEY` setzen |
 | „TLS verification failed“ | `ELABFTW_VERIFY_TLS=false` (nur lokal) oder CA-Pfad angeben |
 | „Refusing to delete everything“ | eLabFTW lieferte 0 Experimente, der Index ist aber gefüllt. Falscher Key oder Team? Nur `--force-empty` leert trotzdem |
 | Index leer | `python -m lab_chatbot sync` oder `seed-demo` |

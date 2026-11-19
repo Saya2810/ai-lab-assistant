@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import Any, Callable
 
 from lab_assistant.formatting import normalize_math_for_elabftw
@@ -20,8 +21,40 @@ log = logging.getLogger(__name__)
 MARKDOWN_CONTENT_TYPE = 2
 
 
+# ------------------------------------------------------------------ write guard
+#
+# The Lab Assistant must never change an entry that already exists in the notebook.
+# It may only fill in an experiment it has just created itself, and only until that
+# creation is finished (``close_entry``). Every write below checks this first, so no
+# form bug, stale id or future feature can edit a written lab notebook entry.
+
+class ProtectedEntryError(PermissionError):
+    """A write to an entry the Lab Assistant did not just create was refused."""
+
+
+_open_entries: set[int] = set()
+_open_lock = threading.Lock()
+
+
+def _ensure_writable(experiment_id: int) -> None:
+    with _open_lock:
+        if int(experiment_id) in _open_entries:
+            return
+    raise ProtectedEntryError(
+        f"Experiment {experiment_id} is an existing lab notebook entry. The Lab Assistant only "
+        "creates new entries and never changes existing ones."
+    )
+
+
+def close_entry(experiment_id: int) -> None:
+    """The creation of ``experiment_id`` is finished: from now on it is read-only for us."""
+    with _open_lock:
+        _open_entries.discard(int(experiment_id))
+
+
 def client() -> ElabFTWClient:
-    return get_client()
+    # the assistant creates entries: it uses the write key (ELABFTW_WRITE_API_KEY)
+    return get_client(write=True)
 
 
 def _all(endpoint: str) -> list[dict]:
@@ -76,6 +109,19 @@ def get_resources() -> list[dict]:
     return _all("items")
 
 
+def get_resource_categories() -> list[dict]:
+    """Categories of resources ("Project", "Antibody", ...); a new resource needs one.
+
+    eLabFTW 6 has them per team; before version 6 the resource categories were
+    called ``items_types`` (in 6 that name holds resource *templates*).
+    """
+    return _all_first(
+        "teams/current/resources_categories",
+        lambda: f"teams/{_team_id()}/resources_categories",
+        "items_types",
+    )
+
+
 def get_tags() -> list[dict]:
     return _all_first("teams/current/tags", "team_tags")
 
@@ -87,6 +133,7 @@ def load_structure() -> dict[str, list[dict]]:
         "statuses": get_experiment_statuses(),
         "templates": get_experiment_templates(),
         "resources": get_resources(),
+        "resource_categories": get_resource_categories(),
         "tags": get_tags(),
     }
 
@@ -122,6 +169,7 @@ def get_experiment(experiment_id: int) -> dict:
 
 def update_experiment_custom_fields(experiment_id: int, custom_fields: dict) -> None:
     """Write field values, keeping fields the form did not show and other metadata."""
+    _ensure_writable(experiment_id)
     metadata = _metadata_dict(get_experiment(experiment_id))
     existing = metadata.get("extra_fields")
     merged = dict(existing) if isinstance(existing, dict) else {}
@@ -143,7 +191,10 @@ def create_experiment(template_id: int | None = None) -> int:
     # ``category_id`` (0 = team default, -1 = empty). Unknown keys are ignored, so send both:
     # otherwise a server that wants the other name would silently create an entry without the template.
     data = {"template": template_id, "category_id": template_id} if template_id is not None else {}
-    return ElabFTWClient.created_id(client().post("experiments", data))
+    experiment_id = ElabFTWClient.created_id(client().post("experiments", data))
+    with _open_lock:
+        _open_entries.add(int(experiment_id))  # writable until close_entry()
+    return experiment_id
 
 
 def update_experiment(
@@ -153,6 +204,7 @@ def update_experiment(
     category_id: int | None = None,
     status_id: int | None = None,
 ) -> None:
+    _ensure_writable(experiment_id)
     data: dict[str, Any] = {}
     if title is not None:
         data["title"] = title
@@ -167,11 +219,28 @@ def update_experiment(
         client().patch(f"experiments/{experiment_id}", data)
 
 
+def create_resource(title: str, category_id: int | None = None) -> int:
+    """Create a resource (eLabFTW "item", e.g. a project) and return its id.
+
+    The title and category are sent with the creation and set again afterwards:
+    older servers ignore fields on POST and would leave an "Untitled" resource.
+    """
+    data: dict[str, Any] = {"title": title}
+    if category_id is not None:
+        data["category"] = category_id
+    resource_id = ElabFTWClient.created_id(client().post("items", data))
+    client().patch(f"items/{resource_id}", data)
+    return resource_id
+
+
 def add_tag_to_experiment(experiment_id: int, tag: str) -> None:
+    """Attach a tag; eLabFTW creates it in the team when it does not exist yet."""
+    _ensure_writable(experiment_id)
     client().post(f"experiments/{experiment_id}/tags", {"tag": tag})
 
 
 def link_resource_to_experiment(experiment_id: int, resource_id: int) -> None:
+    _ensure_writable(experiment_id)
     # eLabFTW insists on a JSON content type here, hence the empty object
     client().post(f"experiments/{experiment_id}/items_links/{resource_id}", {})
 
@@ -179,5 +248,6 @@ def link_resource_to_experiment(experiment_id: int, resource_id: int) -> None:
 def upload_file_to_experiment(
     experiment_id: int, file_name: str, file_content: bytes, comment: str = ""
 ) -> None:
+    _ensure_writable(experiment_id)
     client().upload(f"experiments/{experiment_id}/uploads", file_name, file_content, comment)
 

@@ -38,7 +38,8 @@ from lab_chatbot.planner import Planner
 from lab_chatbot.prompts import ANSWER_SYSTEM, build_answer_prompt, t
 from lab_chatbot.rerank import Reranker
 from lab_chatbot.retrieval import Hit, hybrid_search
-from lab_chatbot.sql_tools import candidate_ids
+from lab_chatbot.scope import Scope
+from lab_chatbot.sql_tools import Filters, candidate_ids
 from lab_chatbot.store import Store
 from lab_chatbot.structured import StructuredAnswers
 from lab_chatbot.telemetry import QueryLog
@@ -72,6 +73,12 @@ class _Turn:
         self.latencies["total"] = self.elapsed_ms()
         answer.latencies = self.latencies
         return ("final", answer)
+
+
+def _restrict(plan: Plan, scope: Scope | None) -> None:
+    """Apply the user's scope to the plan: it becomes part of every SQL query."""
+    if scope is not None and not scope.is_empty():
+        plan.filters.scope = scope
 
 
 def _clean_history(history: Sequence[dict] | None, turns: int) -> list[dict]:
@@ -114,9 +121,10 @@ class Engine:
         question: str,
         history: Sequence[dict] | None = None,
         images: Sequence[bytes] | None = None,
+        scope: Scope | None = None,
     ) -> Answer:
         final = None
-        for kind, payload in self.ask_stream(question, history, images):
+        for kind, payload in self.ask_stream(question, history, images, scope):
             if kind == "final":
                 final = payload
         assert final is not None
@@ -127,16 +135,21 @@ class Engine:
         question: str,
         history: Sequence[dict] | None = None,
         images: Sequence[bytes] | None = None,
+        scope: Scope | None = None,
     ) -> Iterator[Event]:
-        """Answer events, ending with ``("final", Answer)``; one query-log row per question."""
+        """Answer events, ending with ``("final", Answer)``; one query-log row per question.
+
+        ``scope`` limits every answer to part of the notebook (projects, tags, ...).
+        """
         turn = _Turn()
         question = (question or "").strip()
         images = [img for img in (images or []) if img]
+        scope = scope if scope is not None and not scope.is_empty() else None
         try:
             if images:
-                events = self._answer_images(question, history, images, turn)
+                events = self._answer_images(question, history, images, turn, scope)
             else:
-                events = self._answer_text(question, history, turn)
+                events = self._answer_text(question, history, turn, scope)
             for event in events:
                 if event[0] == "final":
                     self._record(event[1], bool(images))
@@ -146,11 +159,16 @@ class Engine:
             self._record(None, bool(images), question, turn.latencies, type(exc).__name__)
             raise
 
-    def retrieve_only(self, question: str, history: Sequence[dict] | None = None):
+    def retrieve_only(
+        self, question: str, history: Sequence[dict] | None = None, scope: Scope | None = None
+    ):
         """Plan + ranked experiment ids, no generation. Used by ``eval`` / ``search``."""
         plan = self.planner.plan(question, _clean_history(history, self.config.history_turns))
+        _restrict(plan, scope)
         if plan.intent in STRUCTURED_INTENTS:
-            return plan, self.structured.answer(plan).experiment_ids, []
+            result = self._structured(plan)
+            if result is not None:
+                return plan, result.experiment_ids, []
         if plan.intent == "chitchat":
             return plan, [], []
         candidates = candidate_ids(self.store, plan.filters, plan.measurement)
@@ -160,7 +178,7 @@ class Engine:
     # ------------------------------------------------------------ text path
 
     def _answer_text(
-        self, question: str, history: Sequence[dict] | None, turn: _Turn
+        self, question: str, history: Sequence[dict] | None, turn: _Turn, scope: Scope | None
     ) -> Iterator[Event]:
         language = detect_language(question, self.config.default_language)
         if not question:
@@ -169,10 +187,14 @@ class Engine:
         if self.store.experiment_count() == 0:
             yield turn.finish(Answer(question, t(language, "empty_index")))
             return
+        if self._scope_is_empty(scope):
+            yield turn.finish(Answer(question, t(language, "scope_empty", scope=scope.describe(language))))
+            return
 
         recent = _clean_history(history, self.config.history_turns)
         with turn.step("plan"):
             plan = self.planner.plan(question, recent)
+        _restrict(plan, scope)
         yield ("plan", plan)
 
         if plan.intent == "chitchat":
@@ -182,10 +204,11 @@ class Engine:
 
         if plan.intent in STRUCTURED_INTENTS:
             with turn.step("sql"):
-                result = self.structured.answer(plan)
-            yield ("tables", result.tables)
-            yield turn.finish(Answer(question, result.text, plan, tables=result.tables))
-            return
+                result = self._structured(plan)
+            if result is not None:
+                yield ("tables", result.tables)
+                yield turn.finish(Answer(question, result.text, plan, tables=result.tables))
+                return
 
         # ---- search (RAG, optionally narrowed by SQL)
         with turn.step("retrieve"):
@@ -237,6 +260,7 @@ class Engine:
         history: Sequence[dict] | None,
         images: Sequence[bytes],
         turn: _Turn,
+        scope: Scope | None,
     ) -> Iterator[Event]:
         """Question with attached images: read them, then answer from image + notebook.
 
@@ -259,15 +283,16 @@ class Engine:
         recent = _clean_history(history, self.config.history_turns)
         plan = None
         hits: list[Hit] = []
-        if self.store.experiment_count() > 0:
+        if self.store.experiment_count() > 0 and not self._scope_is_empty(scope):
             with turn.step("plan"):
                 plan = self.planner.plan(question, recent)
+            _restrict(plan, scope)
             yield ("plan", plan)
             with turn.step("retrieve"):
                 candidates = candidate_ids(self.store, plan.filters, plan.measurement)
                 if candidates is None or candidates:
                     query = f"{plan.semantic_query or question}\n{image_sources[0].text[:400]}"
-                    hits = self._search(query, candidates)
+                    hits = self._search(query, candidates, keywords=plan.keywords)
 
         notebook = self._sources(hits, first_number=len(image_sources) + 1)
         sources = image_sources + notebook
@@ -298,6 +323,10 @@ class Engine:
 
     # ---------------------------------------------------------- shared steps
 
+    def _scope_is_empty(self, scope: Scope | None) -> bool:
+        """True when a scope is set but matches no experiment at all."""
+        return scope is not None and not candidate_ids(self.store, Filters(scope=scope))
+
     def _generate(
         self,
         turn: _Turn,
@@ -322,11 +351,32 @@ class Engine:
         cited, warnings = check_answer(text, sources, extra_evidence, language)
         return text, cited, warnings
 
-    def _search(self, query: str, candidates: set[int] | None) -> list[Hit]:
+    def _structured(self, plan: Plan):
+        """The SQL answer, or None when an aggregate found no values at all.
+
+        Small planner models route text questions ("Wie dicht waren die Zellen?") to an
+        aggregate over some measurement. When that has no values, the question is
+        answered from the text instead of with "no values".
+        """
+        result = self.structured.answer(plan)
+        if result.found or plan.intent != "aggregate":
+            return result
+        plan.notes.append("The aggregate found no values; searching the text instead.")
+        plan.intent, plan.measurement, plan.agg = "search", None, None
+        return None
+
+    def _search(
+        self,
+        query: str,
+        candidates: set[int] | None,
+        alt_queries: Sequence[str] = (),
+        keywords: Sequence[str] = (),
+    ) -> list[Hit]:
         return hybrid_search(
             self.store, self.embedder, query,
             experiment_ids=candidates, k=self.config.top_k,
             min_dense=self.config.min_dense, reranker=self.reranker,
+            alt_queries=alt_queries, keywords=keywords,
         )  # fmt: skip
 
     def _retrieve(self, plan: Plan, candidates: set[int] | None) -> list[Hit]:
@@ -338,7 +388,10 @@ class Engine:
             whole = self.store.chunks_of(sorted(explicit & (candidates or explicit)))
             if 0 < len(whole) <= top_k + 2:
                 return whole
-        hits = self._search(plan.semantic_query or plan.question, candidates)
+        # the planner's search phrase and the user's own words: whichever matches better
+        hits = self._search(
+            plan.semantic_query or plan.question, candidates, [plan.question], plan.keywords
+        )
         if not hits and explicit:
             hits = self.store.chunks_of(sorted(explicit & (candidates or explicit)))[:top_k]
         return hits

@@ -160,7 +160,45 @@ Ohne Verhaltensänderung, damit sich der Code weiter pflegen lässt:
 * **Beispiele im Planer-Prompt ersetzt:** 4 der 5 Beispiele waren fast wörtlich Testfragen der Demo (Tag raman, maximale Belichtungszeit, Wellenlänge über 600 nm, Rauschen bei Probe A3). Die Messung war dadurch zu optimistisch. Die neuen Beispiele lehren dasselbe Format mit anderen Themen; ein Test verhindert, dass Testfragen wieder in den Prompt geraten. Mit dem echten Modell weiterhin 9/9, in zwei Läufen, auch beim Inhalt der Antworten.
 * Abgesichert durch die unveränderte Testsuite (369 bestanden, wie vorher), die 9 Testfragen der Demo mit dem echten Modell (9/9), eine Bildfrage mit dem echten Bildmodell und einen Test der Oberfläche.
 
-## 10. Bewusst nicht getan / offen
+## 10. Neue Ressourcen und Tags im Formular
+
+* **Projekt / Ressource:** Im Feld lässt sich ein neuer Name eintippen. Die Ressource wird beim Anlegen des Eintrags in eLabFTW erzeugt (`POST items` mit Titel und Kategorie) und verknüpft, erst nachdem das Experiment existiert, damit bei einem Fehler keine verwaiste Ressource zurückbleibt. Bei mehreren Ressourcen-Kategorien (`teams/current/resources_categories`, vor eLabFTW 6 `items_types`) wählt man die Kategorie. Gleicher Name in anderer Schreibweise nimmt die vorhandene Ressource.
+* **Tags:** Neue Tags gingen schon, waren aber kaum zu entdecken. Platzhalter und Hilfetext sagen jetzt, dass man tippen und Enter drücken kann.
+* Nach dem Anlegen wird die zwischengespeicherte eLabFTW-Struktur verworfen, damit die neue Ressource und neue Tags beim nächsten Eintrag als vorhandene erscheinen und nicht doppelt angelegt werden.
+* `doctor` prüft zusätzlich die Ressourcen-Kategorien.
+
+## 11. Bestehende Einträge geschützt, getrennte Keys
+
+* **Schreibsperre:** Der Lab Assistant darf bestehende Laborbucheinträge nicht ändern. Alle fünf Schreibwege (Titel/Notizen, Custom Fields, Tags, Ressourcen-Verknüpfung, Upload) prüfen in `lab_assistant/elab_api.py` vorher, ob das Experiment gerade in diesem Vorgang von `create_experiment` angelegt wurde. Nach dem Anlegen (`close_entry`, auch nach Fehlern) ist es auch für den Assistant gesperrt. Abgelehnte Versuche erreichen eLabFTW nicht.
+* **Getrennte Keys:** Der Chatbot liest mit `ELABFTW_API_KEY` (Nur-Lese-Key genügt), der Assistant schreibt mit `ELABFTW_WRITE_API_KEY` (auch unter dem älteren Namen `GENERATE_LABBOOK_ELABFTW_API_KEY`), sonst mit `ELABFTW_API_KEY`. `doctor` nennt, welcher Key gilt. Bei einem Nur-Lese-Key erklärt das Formular, was zu tun ist.
+
+## 12. Chatbot auf Projekte, Tags, Kategorien, Status eingrenzen
+
+* Neue Auswahl „Suche eingrenzen“ in der Seitenleiste (Felder ohne Werte werden ausgeblendet) und `--project/--tag/--category/--status` für `ask`, `chat` und `search`.
+* Die Eingrenzung (`lab_chatbot/scope.py`) wird Teil der SQL-Bedingung (`Filters.scope`) und gilt damit für jeden Antwortweg: Textsuche, Zählen, Listen, Aggregate, auch für ausdrücklich genannte Experiment-Nummern. Innerhalb eines Feldes „oder“, zwischen Feldern „und“. Projekte kommen aus den verknüpften Ressourcen, die schon im Index stehen (kein Neu-Einlesen nötig).
+* Passt die Eingrenzung auf nichts, kommt eine feste Antwort ohne LLM-Aufruf. Über dem Chat steht die aktive Eingrenzung mit Anzahl der Experimente, in Antworten erscheint sie als „Eingrenzung: …“.
+* Geprüft mit dem echten Modell (eingegrenzt auf ein anderes Thema wird das sonst gefundene Experiment nicht verwendet) und mit echten Daten aus eLabFTW (Projekt-Auswahl, 6 von 10 Experimenten).
+
+## 13. Semantische Suche robuster, Repo aufgeräumt
+
+Gemessen mit dem echten Modell am Demo-Laborbuch, mit 12 umschriebenen Fragen (andere Wörter oder Englisch, `lab_chatbot/eval_demo_paraphrase.json`) und 6 Fragen zu Themen, die nicht im Laborbuch stehen (`lab_chatbot/eval_demo_negative.json`):
+
+| | vorher | nachher |
+|---|---|---|
+| umschriebene Fragen, richtiges Experiment auf Platz 1 | 8/12 | 10/12 |
+| … unter den ersten drei | 11/12 | 12/12 |
+| fremde Themen ohne Treffer | 4/6 | 5/6 |
+| bekannte Testfragen | 9/9 | 9/9 |
+
+* **Zwei Formulierungen:** Die Vektorsuche nutzt die Suchphrase des Planers und die Originalfrage, pro Abschnitt zählt die bessere Ähnlichkeit.
+* **Synonyme und Übersetzung:** Der Planer liefert im selben Aufruf `keywords` (Synonyme, Deutsch und Englisch). Sie erweitern nur die Stichwortsuche, so findet „Schaden“ auch „verbrannt“ und „burnt“ den deutschen Eintrag.
+* **Relevanz-Schwelle mit zwei Signalen:** Nur über die Bedeutung gefunden braucht 0,35 (`LAB_MIN_DENSE`, vorher 0,30). Treffer auf Wörter der Frage zählen immer (Probennamen). Treffer nur über Synonyme brauchen zusätzlich 0,30. Gemessen liegen richtige Abschnitte im Median bei 0,40, falsche bei 0,18, einzelne falsche aber bis 0,50: Eine Schwelle allein trennt nicht sauber.
+* **Routing:** „Auflisten“ ohne Filter wird zur Textsuche (außer bei „alle …“). Ein Aggregat ohne Werte sucht im Text weiter, statt „keine Werte“ zu antworten.
+* **Filter nur, wenn wirklich gemeint:** In einer Textsuche wird ein Tag/Kategorie/Status nur hart gefiltert, wenn er als eigenes Wort in der Frage steht; steckt er nur in einem Kompositum („Laserleistung“ → `laser`), wird er zum Suchwort. Vom Planer erfundene Zeiträume ohne Zeitangabe in der Frage fallen weg.
+* **Offen:** Eine Gegenprobe („Which solvent was used for the NMR measurement?“) findet noch ein Experiment mit genau 0,35. Das kleine Embedding-Modell ist die Grenze; ein Reranker (`LAB_RERANK_MODEL`) oder ein größeres Embedding-Modell wäre der nächste Schritt. Die Werte stammen aus 8 Demo-Experimenten und sind für echte Laborbücher erneut zu messen.
+* **Aufgeräumt:** leere Ordner `app/`, `database/`, eine alte virtuelle Umgebung `.venv_old`, ein veralteter README-Entwurf und `.DS_Store`-Dateien entfernt (in den Papierkorb). `requirements-dev.txt` ging in `requirements.txt` auf (CI angepasst).
+
+## 14. Bewusst nicht getan / offen
 
 * Neue Eingabefelder im Assistant müssen in `lab_assistant/state.py` eingetragen werden, damit sie den Seitenwechsel überleben (Buttons und Upload-Feld ausgenommen).
 * `AppTest` kann zwischen `st.Page`-Funktionen nicht wechseln; der echte Seitenwechsel wird nur vom optionalen Browser-Test (`RUN_E2E=1`) abgedeckt.

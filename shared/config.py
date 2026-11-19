@@ -121,6 +121,18 @@ def _parse_verify(value: str | None, api_url: str) -> bool | str:
     return str(path)
 
 
+READ_KEY_VAR = "ELABFTW_API_KEY"
+WRITE_KEY_VARS = ("ELABFTW_WRITE_API_KEY", "GENERATE_LABBOOK_ELABFTW_API_KEY")
+
+
+def api_key_variable(write: bool = False) -> str | None:
+    """Name of the environment variable whose key is used (None: no key set)."""
+    for name in (*WRITE_KEY_VARS, READ_KEY_VAR) if write else (READ_KEY_VAR,):
+        if env_str(name):
+            return name
+    return None
+
+
 @dataclass(frozen=True)
 class ElabFTWConfig:
     api_url: str
@@ -134,13 +146,21 @@ class ElabFTWConfig:
         return elab_site_url() if not self.api_url else site_url_from_api(self.api_url)
 
     @classmethod
-    def from_env(cls) -> "ElabFTWConfig":
-        api_key = env_str("ELABFTW_API_KEY")
-        if not api_key:
+    def from_env(cls, write: bool = False) -> "ElabFTWConfig":
+        """``write=True``: the key of the Lab Assistant, which creates entries.
+
+        The chatbot only reads, so it can (and should) run with a read-only key in
+        ``ELABFTW_API_KEY``; the assistant takes ``ELABFTW_WRITE_API_KEY`` (or the
+        older name ``GENERATE_LABBOOK_ELABFTW_API_KEY``) and falls back to ``ELABFTW_API_KEY``.
+        """
+        name = api_key_variable(write)
+        if name is None:
+            wanted = " or ".join(WRITE_KEY_VARS + (READ_KEY_VAR,)) if write else READ_KEY_VAR
             raise ConfigError(
-                "ELABFTW_API_KEY is not set. Create an API key in eLabFTW "
+                f"{wanted} is not set. Create an API key in eLabFTW "
                 "(Settings > API keys) and put it in .env or the environment."
             )
+        api_key = env_str(name)
         api_url = elab_api_url()
         return cls(
             api_url=api_url,

@@ -228,6 +228,33 @@ def test_failure_after_creation_is_reported_not_hidden():
     assert "title, notes, category, status" in result.done and "tag 'raman'" in result.done  # the rest still ran
 
 
+def test_new_resource_is_created_after_the_experiment_and_linked():
+    api = FakeElabApi()
+    result = create_complete_experiment(
+        "T", "B", new_resource="Projekt X", new_resource_category_id=40, api=api
+    )
+    assert result.complete and result.new_resource_id == 900
+    assert api.names() == ["create_experiment", "update_experiment", "create_resource", "link_resource"]
+    create = [c for c in api.calls if c[0] == "create_resource"][0]
+    assert create[1] == ("Projekt X",) and create[2] == {"category_id": 40}
+    assert [c[1] for c in api.calls if c[0] == "link_resource"] == [(501, 900)]
+
+
+def test_failed_resource_creation_is_reported_and_nothing_is_linked():
+    api = FakeElabApi(fail={"create_resource": RuntimeError("403 forbidden")})
+    result = create_complete_experiment("T", "B", new_resource="Projekt X", api=api)
+    assert not result.complete and result.new_resource_id is None
+    assert any("Projekt X" in w and "403" in w for w in result.warnings)
+    assert "link_resource" not in api.names()
+
+
+def test_no_resource_is_created_when_the_experiment_cannot_be():
+    api = FakeElabApi(fail={"create_experiment": RuntimeError("403")})
+    with pytest.raises(RuntimeError):
+        create_complete_experiment("T", "B", new_resource="Projekt X", api=api)
+    assert "create_resource" not in api.names()  # no orphaned resource
+
+
 def test_creation_failure_raises_because_nothing_exists():
     api = FakeElabApi(fail={"create_experiment": RuntimeError("403")})
     with pytest.raises(RuntimeError):
@@ -252,26 +279,32 @@ def wired(monkeypatch):
     return make
 
 
+@pytest.fixture
+def just_created(monkeypatch):
+    """Experiment 7 was just created by the assistant: it may still be filled in."""
+    monkeypatch.setattr(elab_api, "_open_entries", {7})
+
+
 def test_structure_endpoints_are_paginated(wired):
     session = wired([FakeResponse(200, [{"id": 1}, {"id": 2}]), FakeResponse(200, [{"id": 3}]), FakeResponse(200, [])])
     assert [r["id"] for r in elab_api.get_resources()] == [1, 2, 3]
     assert session.calls[0][1].endswith("/items") and session.calls[1][2]["params"]["offset"] == 2
 
 
-def test_body_is_normalised_and_marked_markdown(wired):
+def test_body_is_normalised_and_marked_markdown(wired, just_created):
     session = wired([FakeResponse(200, {})])
     elab_api.update_experiment(7, title="T", body="```markdown\nGilt \\(x\\)\n```", category_id=3)
     sent = session.calls[0][2]["json"]
     assert sent == {"title": "T", "body": "Gilt $x$", "content_type": 2, "category": 3}
 
 
-def test_update_with_nothing_does_nothing(wired):
+def test_update_with_nothing_does_nothing(wired, just_created):
     session = wired([])
     elab_api.update_experiment(7)
     assert session.calls == []
 
 
-def test_custom_fields_are_merged_not_replaced(wired):
+def test_custom_fields_are_merged_not_replaced(wired, just_created):
     existing = {"metadata": json.dumps({"extra_fields": {"keep": {"value": "1"}, "f": {"value": "old"}}, "elabftw": {"x": 1}})}
     session = wired([FakeResponse(200, existing), FakeResponse(200, {})])
     elab_api.update_experiment_custom_fields(7, {"f": {"value": "new"}})
@@ -336,7 +369,62 @@ def test_missing_team_in_users_me_is_a_clear_error(wired):
         elab_api.get_experiment_statuses()
 
 
-def test_link_resource_sends_json_body(wired):
+def test_create_resource_posts_title_and_category_then_sets_them_again(wired):
+    session = wired([FakeResponse(201, headers={"Location": "https://h/api/v2/items/77"}), FakeResponse(200, {})])
+    assert elab_api.create_resource("Projekt X", category_id=1) == 77
+    (post, patch) = session.calls
+    assert post[0] == "POST" and post[1].endswith("/items") and post[2]["json"] == {"title": "Projekt X", "category": 1}
+    assert patch[0] == "PATCH" and patch[1].endswith("/items/77") and patch[2]["json"] == {"title": "Projekt X", "category": 1}
+
+
+def test_resource_categories_come_from_the_team(wired):
+    session = wired([FakeResponse(200, [{"id": 1, "title": "Project"}]), FakeResponse(200, [])])
+    assert [c["title"] for c in elab_api.get_resource_categories()] == ["Project"]
+    assert session.calls[0][1].endswith("teams/current/resources_categories")
+
+
+def test_link_resource_sends_json_body(wired, just_created):
     session = wired([FakeResponse(201)])
     elab_api.link_resource_to_experiment(7, 30)
     assert session.calls[0][1].endswith("experiments/7/items_links/30") and session.calls[0][2]["json"] == {}
+
+
+# ------------------------------------------------- existing entries stay untouched
+
+
+WRITES = [
+    ("update_experiment", lambda i: elab_api.update_experiment(i, title="x")),
+    ("update_experiment_custom_fields", lambda i: elab_api.update_experiment_custom_fields(i, {"f": {"value": "1"}})),
+    ("add_tag_to_experiment", lambda i: elab_api.add_tag_to_experiment(i, "t")),
+    ("link_resource_to_experiment", lambda i: elab_api.link_resource_to_experiment(i, 30)),
+    ("upload_file_to_experiment", lambda i: elab_api.upload_file_to_experiment(i, "a.txt", b"x")),
+]
+
+
+@pytest.mark.parametrize("name, write", WRITES, ids=[w[0] for w in WRITES])
+def test_existing_entries_cannot_be_changed(wired, name, write):
+    session = wired([FakeResponse(200, {})] * 3)
+    with pytest.raises(elab_api.ProtectedEntryError, match="existing lab notebook entry"):
+        write(42)
+    assert session.calls == []  # refused before anything was sent
+
+
+def test_a_new_entry_is_writable_only_until_its_creation_is_finished(wired, monkeypatch):
+    monkeypatch.setattr(elab_api, "_open_entries", set())
+    session = wired([
+        FakeResponse(201, headers={"Location": "https://lab.example/api/v2/experiments/88"}),  # create
+        FakeResponse(200, {}),                                                               # title, body
+        FakeResponse(201, {}),                                                               # tag
+    ])  # fmt: skip
+    result = create_complete_experiment("T", "B", tags=["raman"], api=elab_api)
+    assert result.experiment_id == 88 and result.complete
+    assert [c[0] for c in session.calls] == ["POST", "PATCH", "POST"]
+    with pytest.raises(elab_api.ProtectedEntryError):  # written: closed for the assistant
+        elab_api.update_experiment(88, title="changed later")
+    assert len(session.calls) == 3
+
+
+def test_the_entry_is_closed_even_when_filling_it_in_fails():
+    api = FakeElabApi(fail={"update_experiment": RuntimeError("boom")})
+    result = create_complete_experiment("T", "B", api=api)
+    assert not result.complete and api.closed == [result.experiment_id]

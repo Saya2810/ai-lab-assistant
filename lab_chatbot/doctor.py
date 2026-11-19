@@ -83,7 +83,8 @@ def check_elabftw(sample: int = 3) -> list[Check]:
         if not overview:
             return [Check("eLabFTW", None, f"reachable at {config.api_url}, but the experiment list is empty "
                           "(wrong team, or an API key of a user who sees nothing?)", critical=False)]
-        checks = [Check("eLabFTW", True, f"reachable at {config.api_url}; sampled {len(overview)} experiment(s)", critical=False)]
+        checks = [Check("eLabFTW", True, f"reachable at {config.api_url} (key from ELABFTW_API_KEY, reading is enough); "
+                        f"sampled {len(overview)} experiment(s)", critical=False)]
         records = [parse_experiment(client.get(f"experiments/{item['id']}")) for item in overview]
     except (ConfigError, Exception) as exc:  # noqa: BLE001 - report anything
         return [Check("eLabFTW", False, str(exc)[:300], critical=False)]

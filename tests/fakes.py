@@ -160,6 +160,7 @@ class FakeElabApi:
 
     def __init__(self, fail: dict[str, Exception] | None = None, template_fields: dict | None = None):
         self.calls: list[tuple] = []
+        self.closed: list[int] = []
         self.fail = fail or {}
         self.next_id = 500
         self.template_fields = template_fields if template_fields is not None else {}
@@ -182,6 +183,10 @@ class FakeElabApi:
         if f"add_tag:{tag}" in self.fail:
             raise self.fail[f"add_tag:{tag}"]
 
+    def create_resource(self, title, category_id=None):
+        self._do("create_resource", title, category_id=category_id)
+        return 900
+
     def link_resource_to_experiment(self, experiment_id, resource_id):
         self._do("link_resource", experiment_id, resource_id)
 
@@ -190,6 +195,9 @@ class FakeElabApi:
 
     def upload_file_to_experiment(self, experiment_id, file_name, file_content, comment=""):
         self._do("upload", experiment_id, file_name, file_content, comment)
+
+    def close_entry(self, experiment_id):
+        self.closed.append(experiment_id)  # not a write: kept out of ``calls``
 
     def get_custom_fields_from_template(self, template_id):
         self._do("get_template_fields", template_id)
@@ -204,6 +212,7 @@ STRUCTURE = {
     "categories": [{"id": 10, "title": "Measurement"}, {"id": 11, "title": "Measurement"}],  # duplicate title
     "statuses": [{"id": 20, "title": "Running"}],
     "resources": [{"id": 30, "title": "Spectrometer"}],
+    "resource_categories": [{"id": 40, "title": "Project"}, {"id": 41, "title": "Instrument"}],
     "tags": [{"tag": "raman"}, {"tag": "laser"}, {"tag": "raman"}],
 }
 

@@ -1,2 +1,3 @@
-# Everything (assistant + chatbot + tests)
--r requirements-dev.txt
+# Everything: assistant + chatbot + tests
+-r requirements-app.txt
+pytest>=8.0,<10

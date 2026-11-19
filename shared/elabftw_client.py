@@ -187,10 +187,14 @@ class ElabFTWClient:
             offset += len(page)
 
 
-@functools.lru_cache(maxsize=1)
-def get_client() -> ElabFTWClient:
-    """Process-wide client, built on first use from the environment."""
-    return ElabFTWClient(ElabFTWConfig.from_env())
+@functools.lru_cache(maxsize=2)
+def get_client(write: bool = False) -> ElabFTWClient:
+    """Process-wide client, built on first use from the environment.
+
+    ``write=True`` uses the Lab Assistant's key (see ``ElabFTWConfig.from_env``);
+    the chatbot uses the default, possibly read-only key.
+    """
+    return ElabFTWClient(ElabFTWConfig.from_env(write=write))
 
 
 def reset_client_cache() -> None:

@@ -82,6 +82,7 @@ STRINGS: dict[str, dict[str, str]] = {
             "Der Index enthält {experiments} Experimente."
         ),
         "no_experiments": "Keine Experimente gefunden für: {filters}.",
+        "scope_empty": "Die Eingrenzung ({scope}) passt auf kein Experiment im Index. Bitte die Auswahl in der Seitenleiste ändern.",
         "no_passages": "Dazu habe ich keine passenden Einträge im Laborbuch gefunden.",
         "image_question": "Was zeigt dieses Bild? Gibt es dazu passende Einträge im Laborbuch?",
         "image_title": "Hochgeladenes Bild {n}",
@@ -133,6 +134,7 @@ STRINGS: dict[str, dict[str, str]] = {
             "The index contains {experiments} experiments."
         ),
         "no_experiments": "No experiments found for: {filters}.",
+        "scope_empty": "The scope ({scope}) matches no experiment in the index. Please change the selection in the sidebar.",
         "no_passages": "I found no matching entries in the lab notebook.",
         "image_question": "What does this image show? Are there related entries in the lab notebook?",
         "image_title": "Uploaded image {n}",

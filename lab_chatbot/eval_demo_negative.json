@@ -1,0 +1,8 @@
+[
+  {"question": "Wie lief der Western Blot mit dem Antikörper gegen Aktin?", "expect_ids": []},
+  {"question": "Which solvent was used for the NMR measurement?", "expect_ids": []},
+  {"question": "Wie hoch war die Ausbeute der Grignard-Reaktion?", "expect_ids": []},
+  {"question": "Was ergab die Röntgenbeugung am Kristall?", "expect_ids": []},
+  {"question": "How long did the mice stay in the maze?", "expect_ids": []},
+  {"question": "Welche Viskosität hatte das Polymer bei Raumtemperatur?", "expect_ids": []}
+]

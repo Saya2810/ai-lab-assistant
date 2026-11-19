@@ -72,7 +72,7 @@ def render_app(
     kwargs = {k: v for k, v in (("generate", generate), ("process", process)) if v is not None}
     draft = render_input(config, **kwargs)
     st.divider()
-    render_lab_form(structure, draft, api=api)
+    render_lab_form(structure, draft, api=api, refresh_structure=getattr(load_structure, "clear", None))
 
 
 def main() -> None:

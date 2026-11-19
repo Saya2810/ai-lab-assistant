@@ -265,6 +265,53 @@ def test_create_entry_end_to_end():
     assert fields["Modus"]["value"] == "CW" and fields["Geprüft"]["value"] == "0"
 
 
+def type_into_selectbox(monkeypatch, key: str, text: str) -> None:
+    """The selectbox ``key`` returns ``text`` as if it had been typed (accept_new_options).
+
+    AppTest cannot do that itself: its Selectbox only knows existing options and fails
+    on every rerun once the value is a new one. The widget is still drawn for real.
+    """
+    import streamlit as st
+
+    original = st.selectbox
+
+    def fake(label, options, *args, **kwargs):
+        value = original(label, options, *args, **kwargs)
+        return text if kwargs.get("key") == key else value
+
+    monkeypatch.setattr(st, "selectbox", fake)
+
+
+def test_a_new_resource_can_be_typed_and_is_created_with_the_entry(monkeypatch):
+    type_into_selectbox(monkeypatch, "lab_resource", "Projekt Quantenpunkte")
+    at = generate(run())
+    assert any("will be created" in c.value for c in at.caption)
+    at.selectbox(key="lab_resource_category").select("Instrument").run()
+    at = fill_and_create(at)
+    assert not at.exception
+    create = [c for c in api().calls if c[0] == "create_resource"]
+    assert create == [("create_resource", ("Projekt Quantenpunkte",), {"category_id": 41})]
+    assert [c[1] for c in api().calls if c[0] == "link_resource"] == [(501, 900)]
+    assert any("Projekt Quantenpunkte" in s.value and "#900" in s.value for s in at.success)
+
+
+def test_typing_an_existing_resource_in_other_case_does_not_create_a_copy(monkeypatch):
+    type_into_selectbox(monkeypatch, "lab_resource", " spectrometer ")
+    at = generate(run())
+    assert not any("will be created" in c.value for c in at.caption)
+    at = fill_and_create(at)
+    assert "create_resource" not in api().names()
+    assert [c[1] for c in api().calls if c[0] == "link_resource"] == [(501, 30)]
+
+
+def test_a_new_tag_can_be_typed():
+    at = generate(run())
+    at.multiselect(key="lab_tags").set_value(["raman", "quantenpunkte"]).run()
+    at = fill_and_create(at)
+    assert not at.exception
+    assert [c[1][1] for c in api().calls if c[0] == "add_tag"] == ["raman", "quantenpunkte"]
+
+
 def test_template_fields_are_fetched_once_not_per_rerun():
     at = generate(run())
     at.selectbox(key="lab_template").select("Spectroscopy").run()

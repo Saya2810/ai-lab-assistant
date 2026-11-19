@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from types import ModuleType
+from typing import Callable
 
 import streamlit as st
 
@@ -93,7 +94,45 @@ def _signature(*parts) -> str:
     return hashlib.sha1(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def render_lab_form(structure: dict, draft: Draft | None = None, api: ModuleType = elab_api) -> None:
+def existing_resource(name: str | None, resources: dict[str, int]) -> int | None:
+    """Id of the resource ``name`` refers to, ignoring case and surrounding spaces."""
+    if not name:
+        return None
+    if name in resources:
+        return resources[name]
+    wanted = " ".join(name.split()).casefold()
+    matches = {i for label, i in resources.items() if " ".join(label.split()).casefold() == wanted}
+    return matches.pop() if len(matches) == 1 else None
+
+
+def render_new_resource(
+    resource: str | None, resources: dict[str, int], structure: dict
+) -> tuple[str | None, int | None]:
+    """A typed name that is not an existing resource: ``(new name, category id)``."""
+    name = (resource or "").strip()
+    if not name or existing_resource(name, resources) is not None:
+        return None, None
+    categories = make_options(structure.get("resource_categories", []))
+    if len(categories) > 1:
+        choice = st.selectbox(
+            "Category of the new resource", list(categories), index=0, key="lab_resource_category"
+        )
+        category_id = categories.get(choice)
+    else:
+        category_id = next(iter(categories.values()), None)
+    where = f" in category '{next(iter(categories))}'" if len(categories) == 1 else ""
+    st.caption(f"New resource '{name}' will be created{where} when you create the entry.")
+    return name, category_id
+
+
+def render_lab_form(
+    structure: dict,
+    draft: Draft | None = None,
+    api: ModuleType = elab_api,
+    refresh_structure: Callable[[], None] | None = None,
+) -> None:
+    """``refresh_structure`` forgets the cached eLabFTW structure, so a resource or tag
+    created with this entry is offered as an existing one next time (not created twice)."""
     templates = make_options(structure["templates"])
     categories = make_options(structure["categories"])
     statuses = make_options(structure["statuses"])
@@ -108,17 +147,27 @@ def render_lab_form(structure: dict, draft: Draft | None = None, api: ModuleType
     template = st.selectbox("Template", list(templates), index=None, placeholder="—", key="lab_template")
     category = st.selectbox("Category", list(categories), index=None, placeholder="—", key="lab_category")
     status = st.selectbox("Status", list(statuses), index=None, placeholder="—", key="lab_status")
-    resource = st.selectbox("Project / Resource", list(resources), index=None, placeholder="—", key="lab_resource")
+    resource = st.selectbox(
+        "Project / Resource", list(resources), index=None, key="lab_resource",
+        accept_new_options=True, placeholder="Choose, or type a new name and press Enter",
+        help="Pick an existing project/resource, or type a new name: it is created in eLabFTW "
+        "together with the entry and linked to it.",
+    )  # fmt: skip
+    new_resource, new_resource_category = render_new_resource(resource, resources, structure)
     tags = st.multiselect(
         "Tags", tag_names(structure["tags"]), key="lab_tags", accept_new_options=True,
-        help="Pick existing tags or type a new one.",
+        placeholder="Choose, or type a new tag and press Enter",
+        help="Pick existing tags, or type a new one: eLabFTW creates it with the entry.",
     )  # fmt: skip
+    new_tags = [tag for tag in tags if tag not in set(tag_names(structure["tags"]))]
 
     ids = {
         "template": templates.get(template),
         "category": categories.get(category),
         "status": statuses.get(status),
-        "resource": resources.get(resource),
+        "resource": existing_resource(resource, resources),
+        "new_resource": new_resource,
+        "new_resource_category": new_resource_category,
     }
 
     st.subheader("Laboratory entry")
@@ -154,17 +203,26 @@ def render_lab_form(structure: dict, draft: Draft | None = None, api: ModuleType
     try:
         result = create_complete_experiment(
             title=title.strip(), body=body, template_id=ids["template"], category_id=ids["category"],
-            status_id=ids["status"], resource_id=ids["resource"], tags=tags,
+            status_id=ids["status"], resource_id=ids["resource"], new_resource=ids["new_resource"],
+            new_resource_category_id=ids["new_resource_category"], tags=tags,
             custom_fields=custom_fields, sources=sources, api=api,
         )  # fmt: skip
     except Exception as error:  # nothing was created
-        st.error(f"Could not create the lab entry: {error}")
+        hint = ""
+        if "read-only key" in str(error):
+            hint = ("\n\nThe eLabFTW API key may only read. Create a read/write key in eLabFTW "
+                    "(Settings > API keys) and set it as ELABFTW_WRITE_API_KEY.")
+        st.error(f"Could not create the lab entry: {error}{hint}")
         return
 
     st.session_state["last_created"] = {"signature": signature, "id": result.experiment_id}
+    if (result.new_resource_id or new_tags) and refresh_structure is not None:
+        refresh_structure()
     link = experiment_url(result.experiment_id)
     if result.complete:
         st.success(f"Lab entry created in eLabFTW (experiment {result.experiment_id}): {link}")
+        if result.new_resource_id:
+            st.success(f"New resource '{new_resource}' created (#{result.new_resource_id}) and linked.")
     else:
         st.warning(
             f"Experiment {result.experiment_id} was created ({link}), but some steps failed – "

@@ -12,9 +12,11 @@ from tests.fakes import FakeEmbedder, FakeLLM
 @pytest.fixture(autouse=True)
 def _isolated_env(monkeypatch, tmp_path):
     """No test may read the developer's real .env or talk to a real server."""
+    from shared.config import WRITE_KEY_VARS
+
     for key in list(__import__("os").environ):
-        if key.startswith(("ELABFTW_", "LAB_", "OLLAMA_")):
-            monkeypatch.delenv(key)
+        if key.startswith(("ELABFTW_", "LAB_", "OLLAMA_")) or key in WRITE_KEY_VARS:
+            monkeypatch.delenv(key)  # incl. the assistant's write key under its older name
     monkeypatch.setenv("LAB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LAB_SKIP_DOTENV", "1")
     monkeypatch.chdir(tmp_path)  # relative paths a test might write must never land in the repo

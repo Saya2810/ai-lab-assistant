@@ -37,7 +37,8 @@ from lab_chatbot.answer import Answer
 from lab_chatbot.engine import Engine
 from lab_chatbot.errors import BackendUnavailable, ChatbotError
 from lab_chatbot.llm_gate import listening
-from lab_chatbot.state import DEBUG_KEY, FULL_SYNC_KEY
+from lab_chatbot.scope import Scope, scope_options
+from lab_chatbot.state import DEBUG_KEY, FULL_SYNC_KEY, SCOPE_KEYS
 from shared.config import ConfigError, env_str
 from shared.elabftw_client import ElabFTWError
 
@@ -62,6 +63,15 @@ UI = {
         "sync_interrupted": "Der letzte Sync wurde unterbrochen. Der nächste macht dort weiter.",
         "clear": "Chat leeren",
         "debug": "Plan & Zeiten anzeigen",
+        "scope": "Suche eingrenzen",
+        "scope_help": "Nur diese Experimente durchsuchen. Innerhalb eines Feldes reicht eins davon, "
+        "zwischen den Feldern muss alles passen.",
+        "scope_resources": "Projekte / Ressourcen",
+        "scope_tags": "Tags",
+        "scope_categories": "Kategorien",
+        "scope_statuses": "Status",
+        "scope_count": "{n} von {total} Experimenten",
+        "scope_active": "Eingegrenzt auf {scope} ({n} Experimente). Antworten kommen nur aus diesen Einträgen.",
         "placeholder": "Frage zum Laborbuch, optional mit Bild …",
         "image_reading": "Lese Bild …",
         "image_text": "Bildinhalt (vom Bildmodell gelesen)",
@@ -110,6 +120,15 @@ UI = {
         "sync_interrupted": "The last sync was interrupted. The next one continues where it stopped.",
         "clear": "Clear chat",
         "debug": "Show plan & timings",
+        "scope": "Narrow the search",
+        "scope_help": "Only search these experiments. Within one field any choice matches, "
+        "across fields all must match.",
+        "scope_resources": "Projects / resources",
+        "scope_tags": "Tags",
+        "scope_categories": "Categories",
+        "scope_statuses": "Statuses",
+        "scope_count": "{n} of {total} experiments",
+        "scope_active": "Limited to {scope} ({n} experiments). Answers come only from these entries.",
         "placeholder": "Ask your lab notebook, optionally attach an image …",
         "image_reading": "Reading image …",
         "image_text": "Image content (read by the vision model)",
@@ -276,6 +295,7 @@ def run_turn(
     ui: dict,
     show_debug: bool,
     images: list[bytes] | None = None,
+    scope: Scope | None = None,
 ) -> dict:
     """Stream one answer into the page; returns the message to store."""
     with st.chat_message("assistant"):
@@ -297,7 +317,7 @@ def run_turn(
             if images:
                 plan_box.caption(ui["image_reading"])
             with listening(on_wait):
-                for kind, payload in engine.ask_stream(question, history, images):
+                for kind, payload in engine.ask_stream(question, history, images, scope):
                     if kind == "images":
                         plan_box.empty()
                         for image_text in payload:
@@ -405,6 +425,31 @@ def render_sync_status(engine: Engine, ui: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def render_scope(engine: Engine, ui: dict) -> tuple[Scope | None, int]:
+    """Sidebar choice of projects/tags/categories/statuses; ``(scope or None, experiments in it)``."""
+    from lab_chatbot.sql_tools import Filters, candidate_ids
+
+    options = scope_options(engine.store)
+    active = any(st.session_state.get(key) for key in SCOPE_KEYS.values())
+    chosen: dict[str, list[str]] = {}
+    with st.expander(ui["scope"], expanded=active):
+        st.caption(ui["scope_help"])
+        for kind, key in SCOPE_KEYS.items():
+            # after a sync a chosen value may be gone: drop it instead of failing
+            if key in st.session_state:
+                st.session_state[key] = [v for v in st.session_state[key] if v in options[kind]]
+            if not options[kind]:
+                chosen[kind] = []  # nothing of this kind in the notebook: no empty field
+                continue
+            chosen[kind] = st.multiselect(ui[f"scope_{kind}"], options[kind], key=key)
+        scope = Scope.of(**chosen)
+        if scope.is_empty():
+            return None, 0
+        n = len(candidate_ids(engine.store, Filters(scope=scope)) or ())
+        st.caption(ui["scope_count"].format(n=n, total=engine.store.experiment_count()))
+    return scope, n
+
+
 def render_app(engine_provider: Callable[[], Engine], config: ChatbotConfig, embedded: bool = False) -> None:
     """Draw the whole page. ``engine_provider`` is injected so tests can use fakes.
     ``embedded=True`` when it is one page of the combined ``app.py`` (which owns the page config)."""
@@ -435,6 +480,7 @@ def render_app(engine_provider: Callable[[], Engine], config: ChatbotConfig, emb
             getattr(st, level)(text)
         if not has_key:
             st.caption(ui["sync_no_key"])
+        scope, in_scope = render_scope(engine, ui)
         show_debug = st.toggle(ui["debug"], value=False, key=DEBUG_KEY)
         if st.button(ui["clear"], width="stretch"):
             st.session_state.messages = []
@@ -445,6 +491,8 @@ def render_app(engine_provider: Callable[[], Engine], config: ChatbotConfig, emb
     st.caption(ui["caption"])
     if engine.store.experiment_count() == 0:
         st.info(ui["empty_hint"])
+    if scope is not None:
+        st.info(ui["scope_active"].format(scope=scope.describe(config.default_language), n=in_scope))
 
     messages: list[dict] = st.session_state.messages
     for message in messages:
@@ -474,7 +522,7 @@ def render_app(engine_provider: Callable[[], Engine], config: ChatbotConfig, emb
             for content in images:
                 st.image(content, width=320)
         history = [{"role": m["role"], "content": m["content"]} for m in messages]
-        reply = run_turn(engine, question, history, ui, show_debug, images)
+        reply = run_turn(engine, question, history, ui, show_debug, images, scope)
         messages.append({"role": "user", "content": shown})
         messages.append(reply)
 

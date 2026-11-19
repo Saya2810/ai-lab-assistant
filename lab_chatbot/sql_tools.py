@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 from lab_chatbot.retrieval import fold, query_tokens
 from lab_chatbot.store import Store, id_list, norm
+from lab_chatbot.scope import Scope, scope_clause
 from lab_chatbot.units import from_si, lookup_unit, to_si, unit_norm
 
 _WORDS = re.compile(r"\w+", re.UNICODE)
@@ -41,11 +42,14 @@ class Filters:
     status: str | None = None
     author: str | None = None
     experiment_ids: list[int] = field(default_factory=list)
+    # chosen by the user (sidebar / CLI), not by the planner: limits every answer
+    scope: Scope | None = None
 
     def is_empty(self) -> bool:
         return not (
             self.date_from or self.date_to or self.tags_all or self.tags_any
             or self.category or self.status or self.author or self.experiment_ids
+            or (self.scope is not None and not self.scope.is_empty())
         )  # fmt: skip
 
     def describe(self) -> list[str]:
@@ -165,6 +169,10 @@ def build_where(filters: Filters, meas: MeasurementCond | None = None) -> tuple[
     if filters.author:
         clauses.append("lower(e.author) LIKE ?")
         params.append(f"%{norm(filters.author)}%")
+    if filters.scope is not None and not filters.scope.is_empty():
+        clause, scope_params = scope_clause(filters.scope)
+        clauses.append(clause)
+        params += scope_params
     if meas is not None:
         clause, meas_params = _measurement_clause(meas)
         clauses.append(clause)

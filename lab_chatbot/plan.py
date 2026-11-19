@@ -36,15 +36,21 @@ class Plan:
     notes: list[str] = field(default_factory=list)
     source: str = "llm"  # "llm" | "heuristic"
     language: str = "de"
+    keywords: list[str] = field(default_factory=list)  # synonyms/translations for the keyword search
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def describe_filters(self) -> str:
-        """Filters and measurement condition in words ("–" when there are none)."""
+        """Filters, measurement condition and scope in words ("–" when there are none)."""
         parts = self.filters.describe()
         if self.measurement and self.measurement.op:
             parts.append(self.measurement.describe())
+        scope = self.filters.scope
+        if scope is not None and not scope.is_empty():
+            from lab_chatbot.scope import scope_label
+
+            parts.append(f"{scope_label(self.language)}: {scope.describe(self.language)}")
         return "; ".join(parts) or "–"
 
 
@@ -126,11 +132,18 @@ class RawPlan(BaseModel):
     measurement: RawMeasurement | None = None
     group_by: str | None = None
     order: str | None = None
+    keywords: list[str] = []
 
     @field_validator("group_by", "order", mode="before")
     @classmethod
     def _blank(cls, v):
         return _blank_to_none(v)
+
+    @field_validator("keywords", mode="before")
+    @classmethod
+    def _keywords(cls, v):
+        values = v.split(",") if isinstance(v, str) else _as_list(v)
+        return [str(x) for x in values]
 
 
 # JSON schema for Ollama's structured output (``format=``)
@@ -139,6 +152,7 @@ PLAN_SCHEMA = {
     "properties": {
         "intent": {"type": "string", "enum": list(INTENTS)},
         "semantic_query": {"type": "string"},
+        "keywords": {"type": "array", "items": {"type": "string"}},
         "filters": {
             "type": "object",
             "properties": {

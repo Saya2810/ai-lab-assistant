@@ -32,7 +32,7 @@ from lab_chatbot.language import detect_language
 from lab_chatbot.llm import LLM
 from lab_chatbot.plan import PLAN_SCHEMA, Plan, RawPlan
 from lab_chatbot.plan_rules import enrich_with_regex, heuristic_plan, is_chitchat
-from lab_chatbot.plan_validation import ground_filters, normalize_plan
+from lab_chatbot.plan_validation import fix_routing, ground_filters, normalize_plan
 from lab_chatbot.sql_tools import Catalog, load_catalog
 from lab_chatbot.store import Store
 
@@ -53,6 +53,10 @@ Fields:
 - semantic_query: the question rewritten as a STANDALONE search phrase in the user's language
   (resolve "it", "that one", "the previous experiment" using the conversation). Keep only the
   content words; leave out what the filters already express.
+- keywords: for "search" only: 4-8 other words a lab notebook might use for the same
+  content: synonyms, the German AND the English word, related technical terms (for
+  "Schaden an der Probe": "verbrannt", "beschädigt", "damaged", "burnt"). Single words or
+  short terms. Never filter values, never invented sample names or numbers.
 - filters: only what the user actually asked for.
   Use ONLY tag/category/status/measurement names that appear in the CATALOG, spelled exactly
   as there. If the user names something that is not in the catalog, leave the filter out and
@@ -81,7 +85,7 @@ Q: What was the average flow rate?
 Q: Which runs had a temperature below 4 °C?
 {"intent":"list","semantic_query":"","measurement":{"name":"Temperature","op":"<","value":4,"unit":"°C"}}
 Q: Warum ist die Säule beim zweiten Lauf verstopft?
-{"intent":"search","semantic_query":"Säule verstopft zweiter Lauf Ursache","filters":{}}
+{"intent":"search","semantic_query":"Säule verstopft zweiter Lauf Ursache","keywords":["Verstopfung","clogged","column","Druckanstieg","pressure"],"filters":{}}
 Q: Danke!
 {"intent":"chitchat","semantic_query":""}
 """
@@ -153,7 +157,7 @@ class Planner:
                 build_planner_messages(question, catalog, self.today(), history)
             )
             plan = normalize_plan(raw, catalog, question, self.default_language)
-            plan = ground_filters(plan, question, history)
+            plan = fix_routing(ground_filters(plan, question, history), question)
         except BackendUnavailable:
             raise
         except Exception as exc:

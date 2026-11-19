@@ -139,7 +139,18 @@ def normalize_plan(
         notes=notes,
         source="llm",
         language=detect_language(question, default_language),
+        keywords=_clean_keywords(raw.keywords),
     )
+
+
+def _clean_keywords(values: list[str], limit: int = 12) -> list[str]:
+    """Short, distinct terms only: they widen the keyword search, they are not a query."""
+    cleaned: list[str] = []
+    for value in values:
+        term = " ".join(str(value).split())[:40]
+        if len(term) >= 3 and term.casefold() not in {c.casefold() for c in cleaned}:
+            cleaned.append(term)
+    return cleaned[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -147,46 +158,75 @@ def normalize_plan(
 # ---------------------------------------------------------------------------
 
 
-def _value_named(value: str, folded_text: str, tokens: list[str]) -> bool:
-    """Does the user's text name ``value`` (accent/case-insensitive, inflection- and typo-tolerant)?"""
+def _value_named(value: str, folded_text: str, tokens: list[str]) -> str | None:
+    """How the user's text names ``value``: "exact" (as a word or phrase), "loose"
+    (inflected, inside a compound word, or with a typo) or None (not at all)."""
     folded = fold(value)
-    if not folded.strip() or folded in folded_text:
-        return True
+    if not folded.strip():
+        return "exact"
+    if re.search(rf"(?<!\w){re.escape(folded)}(?!\w)", folded_text):
+        return "exact"
+    if folded in folded_text:
+        return "loose"  # e.g. "laser" inside "laserleistung"
     for word in re.findall(r"\w+", folded):
         if len(word) < 3:
             continue
         for token in tokens:
             if word == token:
-                return True
+                return "loose"
             if len(word) >= 4 and len(token) >= 4:
                 head = max(4, min(len(word), len(token)) - 2)
                 if word[:head] == token[:head]:
-                    return True
+                    return "loose"
                 if difflib.SequenceMatcher(None, word, token).ratio() >= 0.84:
-                    return True
-    return False
+                    return "loose"
+    return None
+
+
+_TIME_WORDS = re.compile(
+    r"\d{4}|\d{1,2}\.\s?\d{1,2}\.|\b(januar|februar|märz|maerz|april|mai|juni|juli|august|september|"
+    r"oktober|november|dezember|january|february|march|may|june|july|october|december|jan|feb|mar|apr|"
+    r"jun|jul|aug|sep|sept|oct|okt|nov|dec|dez|heute|gestern|vorgestern|morgen|woche|wochen|monat|monate|"
+    r"monaten|jahr|jahres|jahren|quartal|semester|today|yesterday|week|weeks|month|months|year|years|"
+    r"quarter|seit|since|zuletzt|neueste|neuesten|latest|recent|recently|kürzlich|kuerzlich)\b",
+    re.I,
+)
 
 
 def ground_filters(plan: Plan, question: str, history: Sequence[dict] | None = None) -> Plan:
-    """Drop tag/category/status/author/id filters the user never mentioned.
+    """Drop filters the user never asked for; in a text search, soften loose ones.
 
     Small planner models sometimes copy half the catalog into the filters (seen:
     every tag plus a status for "Bei welchem Experiment gab es Rauschen bei
-    Probe A3?") or take experiment ids from the prompt's examples. Such a filter
-    silently returns nothing. A filter value must therefore appear in the
-    question or in one of the last user turns (follow-ups such as "und davon nur
-    die abgeschlossenen?"); otherwise it is removed and the search runs wider
-    instead of coming back empty.
+    Probe A3?"), take experiment ids from the prompt's examples, or fill in the
+    notebook's whole date span. Such a filter silently returns nothing or the
+    wrong entries. Rules:
+
+    * a tag/category/status/author must appear in the question or one of the last
+      user turns (follow-ups such as "und davon nur die abgeschlossenen?");
+    * in a *text search* it must appear as a word of its own: "Laserleistung" is
+      about laser power, not a reason to exclude every entry without the tag
+      "laser". Such loose mentions become search words instead of filters;
+    * experiment ids must be numbers the user wrote; a date range needs a time
+      expression in the question.
     """
     recent = [m.get("content", "") for m in (history or []) if m.get("role") == "user"][-2:]
     text = " ".join([*recent, question])
     folded_text, tokens = fold(text), [fold(t) for t in query_tokens(text)]
     f = plan.filters
+    search = plan.intent == "search"
 
     def keep(value: str | None, label: str) -> bool:
-        if not value or _value_named(value, folded_text, tokens):
+        if not value:
             return True
-        plan.notes.append(f"Dropped {label} '{value}': not mentioned in the question.")
+        how = _value_named(value, folded_text, tokens)
+        if how == "exact" or (how == "loose" and not search):
+            return True
+        if how == "loose":
+            plan.keywords = [*plan.keywords, value] if value not in plan.keywords else plan.keywords
+            plan.notes.append(f"Used {label} '{value}' as a search word, not as a filter.")
+        else:
+            plan.notes.append(f"Dropped {label} '{value}': not mentioned in the question.")
         return False
 
     f.tags_all = [v for v in f.tags_all if keep(v, "tag")]
@@ -199,4 +239,32 @@ def ground_filters(plan: Plan, question: str, history: Sequence[dict] | None = N
     for attr in ("category", "status", "author"):
         if not keep(getattr(f, attr), attr):
             setattr(f, attr, None)
+    if (f.date_from or f.date_to) and not _TIME_WORDS.search(text):
+        plan.notes.append(f"Dropped date range {f.date_from or '…'} – {f.date_to or '…'}: no time in the question.")
+        f.date_from = f.date_to = None
+    return plan
+
+
+# ---------------------------------------------------------------------------
+# routing: the structured routes need something to work with
+# ---------------------------------------------------------------------------
+
+_ASKS_FOR_ALL = re.compile(
+    r"\b(alle|allen|sämtliche|saemtliche|jedes|jede|all|every|each|overview|übersicht|uebersicht)\b", re.I
+)
+
+
+def fix_routing(plan: Plan, question: str) -> Plan:
+    """A "list" without any filter lists the whole notebook. Small planner models pick it
+    for ordinary content questions ("Which solvent was used for the NMR measurement?"),
+    often after ``ground_filters`` removed invented filters. Unless the user asked for
+    all/every experiment, such a question is answered from the text instead."""
+    if (
+        plan.intent == "list"
+        and plan.filters.is_empty()
+        and plan.measurement is None
+        and not _ASKS_FOR_ALL.search(question)
+    ):
+        plan.intent = "search"
+        plan.notes.append("A list without any filter is not what was asked; searching the text instead.")
     return plan

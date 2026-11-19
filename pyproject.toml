@@ -30,4 +30,4 @@ lab-chatbot = "lab_chatbot.cli:main"
 packages = ["shared", "lab_assistant", "lab_assistant.components", "lab_chatbot"]
 
 [tool.setuptools.package-data]
-lab_chatbot = ["golden_demo.json"]
+lab_chatbot = ["golden_demo.json", "eval_demo_paraphrase.json", "eval_demo_negative.json"]

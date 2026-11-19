@@ -22,6 +22,7 @@ WIDGET_KEYS = frozenset(
         "lab_category",
         "lab_status",
         "lab_resource",
+        "lab_resource_category",
         "lab_tags",
         "lab_title",
         "lab_body",

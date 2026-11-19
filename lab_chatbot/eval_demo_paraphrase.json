@@ -1,0 +1,14 @@
+[
+  {"question": "Welche Probe hat durch zu viel Laserleistung Schaden genommen?", "expect_ids": [105]},
+  {"question": "Which sample got burnt during the measurement?", "expect_ids": [105]},
+  {"question": "Warum war das Signal bei A3 so unruhig?", "expect_ids": [102]},
+  {"question": "Was hat das verrauschte Spektrum am Ende verbessert?", "expect_ids": [101]},
+  {"question": "Bei welcher Temperatur klappte die DNA-Vervielfältigung am besten?", "expect_ids": [103]},
+  {"question": "Wie dicht waren die Zellen, bevor sie aufgeteilt wurden?", "expect_ids": [104]},
+  {"question": "How was the buffer solution prepared?", "expect_ids": [106]},
+  {"question": "Wie stabil war die Leistung des grünen Lasers über eine halbe Stunde?", "expect_ids": [107]},
+  {"question": "Was sah man bei der Aufnahme des grün leuchtenden Proteins?", "expect_ids": [108]},
+  {"question": "Which measurement suffered from a strong fluorescence background?", "expect_ids": [102]},
+  {"question": "Gab es Verunreinigungen in der Zellkultur?", "expect_ids": [104]},
+  {"question": "What happened at the higher temperature in the gradient run?", "expect_ids": [103]}
+]

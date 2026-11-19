@@ -17,6 +17,7 @@ class CreateResult:
     experiment_id: int
     warnings: list[str] = field(default_factory=list)
     done: list[str] = field(default_factory=list)
+    new_resource_id: int | None = None
 
     @property
     def complete(self) -> bool:
@@ -30,6 +31,8 @@ def create_complete_experiment(
     category_id: int | None = None,
     status_id: int | None = None,
     resource_id: int | None = None,
+    new_resource: str | None = None,
+    new_resource_category_id: int | None = None,
     tags: list[str] | None = None,
     custom_fields: dict | None = None,
     sources: dict | None = None,
@@ -40,8 +43,28 @@ def create_complete_experiment(
     Only the creation itself may raise (nothing exists yet then). Every later step
     is isolated: one failing tag or upload no longer hides that the experiment was
     created, and no longer prevents the remaining steps.
+
+    Existing entries are never touched: the eLabFTW layer only allows writes to the
+    experiment created here, and closes it again when this function returns.
+
+    ``new_resource`` is the title of a project/resource to create and link. It is
+    created only after the experiment exists, so a failed creation never leaves an
+    orphaned resource behind.
     """
     experiment_id = api.create_experiment(template_id=template_id)
+    try:
+        return _fill_in(
+            api, experiment_id, title, body, category_id, status_id, resource_id,
+            new_resource, new_resource_category_id, tags, custom_fields, sources,
+        )  # fmt: skip
+    finally:
+        api.close_entry(experiment_id)  # written: the assistant may never change it again
+
+
+def _fill_in(
+    api, experiment_id, title, body, category_id, status_id, resource_id,
+    new_resource, new_resource_category_id, tags, custom_fields, sources,
+) -> CreateResult:  # fmt: skip
     result = CreateResult(experiment_id)
 
     def step(label: str, action: Callable[[], object]) -> None:
@@ -59,6 +82,15 @@ def create_complete_experiment(
     )
     for tag in dict.fromkeys(tags or []):
         step(f"tag '{tag}'", lambda tag=tag: api.add_tag_to_experiment(experiment_id, tag))
+    if new_resource:
+        created: dict[str, int] = {}
+
+        def create_resource() -> None:
+            created["id"] = api.create_resource(new_resource, category_id=new_resource_category_id)
+
+        step(f"new resource '{new_resource}'", create_resource)
+        result.new_resource_id = created.get("id")
+        resource_id = result.new_resource_id
     if resource_id is not None:
         step("resource link", lambda: api.link_resource_to_experiment(experiment_id, resource_id))
     if custom_fields:

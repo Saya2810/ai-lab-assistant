@@ -109,6 +109,7 @@ def fake_structure(monkeypatch, **fail):
         "get_experiment_categories": [{"id": 1, "title": "A"}],
         "get_experiment_statuses": [{"id": 1, "title": "Running"}],
         "get_resources": [],
+        "get_resource_categories": [{"id": 1, "title": "Project"}],
         "get_tags": [{"id": 1, "tag": "raman"}],
     }
     loaders = []

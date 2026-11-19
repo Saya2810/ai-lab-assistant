@@ -60,7 +60,7 @@ class ChatbotConfig:
             embed_model=env_str("LAB_EMBED_MODEL", "embeddinggemma"),
             num_ctx=env_int("LAB_NUM_CTX", 8192),
             top_k=env_int("LAB_TOP_K", 6),
-            min_dense=env_float("LAB_MIN_DENSE", 0.30),
+            min_dense=env_float("LAB_MIN_DENSE", 0.35),
             max_context_chars=env_int("LAB_MAX_CONTEXT_CHARS", 9000),
             history_turns=env_int("LAB_HISTORY_TURNS", 3),
             default_language=env_str("LAB_DEFAULT_LANGUAGE", "de"),

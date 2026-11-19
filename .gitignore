@@ -37,3 +37,7 @@ references/
 .coverage
 htmlcov/
 *.log
+
+# exports of chat sessions, local tool settings
+/Claude outputs/
+/.claude/launch.json

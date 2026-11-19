@@ -38,10 +38,29 @@ def format_table(table, show_links: bool = False, max_cell: int = 42) -> str:
     return "\n".join([line(header), line(["-" * w for w in widths]), *(line(r) for r in rows)])
 
 
-def _print_answer_events(engine, question: str, history, explain: bool) -> str:
+def scope_from_args(args):
+    """``--project/--tag/--category/--status`` (each repeatable) as a Scope, or None."""
+    from lab_chatbot.scope import Scope
+
+    scope = Scope.of(
+        resources=getattr(args, "project", None) or (), tags=getattr(args, "tag", None) or (),
+        categories=getattr(args, "category", None) or (), statuses=getattr(args, "status", None) or (),
+    )  # fmt: skip
+    return None if scope.is_empty() else scope
+
+
+def add_scope_arguments(parser) -> None:
+    group = parser.add_argument_group("scope (answer only from these experiments)")
+    group.add_argument("--project", action="append", metavar="NAME", help="linked project/resource (repeatable)")
+    group.add_argument("--tag", action="append", metavar="TAG", help="tag (repeatable: any of them)")
+    group.add_argument("--category", action="append", metavar="NAME", help="category (repeatable)")
+    group.add_argument("--status", action="append", metavar="NAME", help="status (repeatable)")
+
+
+def _print_answer_events(engine, question: str, history, explain: bool, scope=None) -> str:
     """Run one question, streaming tokens; returns the final answer text."""
     final = None
-    for kind, payload in engine.ask_stream(question, history):
+    for kind, payload in engine.ask_stream(question, history, scope=scope):
         if kind == "plan" and explain:
             print("── plan ──", file=sys.stderr)
             print(json.dumps(payload.to_dict(), indent=2, ensure_ascii=False, default=str), file=sys.stderr)
@@ -115,7 +134,7 @@ def cmd_worker(args, config) -> int:
 def cmd_ask(args, config) -> int:
     from lab_chatbot.factory import build_engine
 
-    _print_answer_events(build_engine(config), args.question, None, args.explain)
+    _print_answer_events(build_engine(config), args.question, None, args.explain, scope_from_args(args))
     return 0
 
 
@@ -123,7 +142,10 @@ def cmd_chat(args, config) -> int:
     from lab_chatbot.factory import build_engine
 
     engine = build_engine(config)
+    scope = scope_from_args(args)
     print("Lab Chatbot. Empty line or 'exit' quits.")
+    if scope is not None:
+        print(f"Scope: {scope.describe()}")
     history: list[dict] = []
     while True:
         try:
@@ -134,7 +156,7 @@ def cmd_chat(args, config) -> int:
         if not question or question.lower() in ("exit", "quit"):
             return 0
         try:
-            answer = _print_answer_events(engine, question, history, args.explain)
+            answer = _print_answer_events(engine, question, history, args.explain, scope)
         except ChatbotError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             continue
@@ -145,7 +167,7 @@ def cmd_search(args, config) -> int:
     from lab_chatbot.factory import build_engine
 
     engine = build_engine(config)
-    plan, ids, hits = engine.retrieve_only(args.query)
+    plan, ids, hits = engine.retrieve_only(args.query, scope=scope_from_args(args))
     print(f"intent={plan.intent} source={plan.source}  query={plan.semantic_query!r}")
     if plan.notes:
         print("notes:", "; ".join(plan.notes))
@@ -254,14 +276,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ask", help="ask one question")
     p.add_argument("question")
     p.add_argument("--explain", action="store_true", help="show the plan and timings")
+    add_scope_arguments(p)
     p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("chat", help="interactive chat")
     p.add_argument("--explain", action="store_true")
+    add_scope_arguments(p)
     p.set_defaults(func=cmd_chat)
 
     p = sub.add_parser("search", help="retrieval only (no answer): see what would be found")
     p.add_argument("query")
+    add_scope_arguments(p)
     p.set_defaults(func=cmd_search)
 
     sub.add_parser("stats", help="index statistics").set_defaults(func=cmd_stats)

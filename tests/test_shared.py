@@ -141,3 +141,17 @@ def test_pagination_rejects_non_list():
     client, _ = make_client([FakeResponse(200, {"error": "x"})])
     with pytest.raises(ElabFTWError, match="list"):
         list(client.iter_paginated("experiments"))
+
+
+def test_the_assistant_writes_with_its_own_key_and_the_chatbot_reads_with_the_default(monkeypatch):
+    from shared.config import api_key_variable
+
+    monkeypatch.setenv("ELABFTW_API_KEY", "READ")
+    assert ElabFTWConfig.from_env().api_key == "READ"
+    assert ElabFTWConfig.from_env(write=True).api_key == "READ"  # no write key: fall back
+    monkeypatch.setenv("GENERATE_LABBOOK_ELABFTW_API_KEY", "OLDNAME")
+    assert ElabFTWConfig.from_env(write=True).api_key == "OLDNAME"
+    monkeypatch.setenv("ELABFTW_WRITE_API_KEY", "WRITE")
+    assert ElabFTWConfig.from_env(write=True).api_key == "WRITE"
+    assert ElabFTWConfig.from_env().api_key == "READ"  # the chatbot never gets the write key
+    assert (api_key_variable(write=True), api_key_variable()) == ("ELABFTW_WRITE_API_KEY", "ELABFTW_API_KEY")
