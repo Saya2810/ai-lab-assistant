@@ -5,7 +5,7 @@ import json
 import pytest
 
 from lab_chatbot import cli, doctor
-from lab_chatbot.engine import Table
+from lab_chatbot.answer import Table
 from lab_chatbot.evaluation import evaluate, load_cases
 from tests.fakes import FakeElabClient, FakeEmbedder, FakeLLM, plan_json
 

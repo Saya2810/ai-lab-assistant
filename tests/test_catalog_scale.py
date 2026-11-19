@@ -7,7 +7,9 @@ from datetime import date
 
 import pytest
 
-from lab_chatbot.planner import RawFilters, RawMeasurement, RawPlan, build_planner_messages, normalize_plan
+from lab_chatbot.plan import RawFilters, RawMeasurement, RawPlan
+from lab_chatbot.plan_validation import normalize_plan
+from lab_chatbot.planner import build_planner_messages
 from lab_chatbot.sql_tools import load_catalog
 from lab_chatbot.store import Store
 

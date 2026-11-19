@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from lab_chatbot.engine import Engine, parse_citations, unsupported_numbers
+from lab_chatbot.answer_checks import parse_citations, unsupported_numbers
+from lab_chatbot.engine import Engine
 from lab_chatbot.errors import BackendUnavailable
 from lab_chatbot.prompts import ANSWER_SYSTEM, build_answer_prompt, defang
 from tests.fakes import FakeLLM, plan_json

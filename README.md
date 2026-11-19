@@ -138,7 +138,7 @@ Weitere Befehle:
 - `stats`: Index-Statistik
 - `sync --full`: alles neu einlesen, zum Beispiel nach einem Modellwechsel
 - `sync --limit 5`: nur die ersten Experimente, zum Testen
-- `eval --golden <datei>`: Golden-Set laufen lassen
+- `eval --golden <datei>`: Testfragen mit erwarteten Ergebnissen laufen lassen
 - `seed-demo`: Demo-Laborbuch anlegen
 - `worker`: Index regelmäßig im Hintergrund aktualisieren (siehe „Große Datenmengen“)
 - `querylog`: Auswertung des Frageprotokolls (`--last N` listet die letzten Fragen)
@@ -211,7 +211,7 @@ make chatbot     # nur Chatbot-Oberfläche
 make assistant   # nur Assistant-Oberfläche
 make sync        # Chatbot-Index aktualisieren
 make doctor      # beide Diagnosen
-make demo        # Demo-Laborbuch plus Golden-Set
+make demo        # Demo-Laborbuch plus Testfragen
 make e2e         # Browser-Test (braucht playwright)
 ```
 

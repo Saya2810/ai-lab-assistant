@@ -19,7 +19,7 @@ doctor:             ## check Ollama, models, eLabFTW and the index (both apps)
 sync:               ## read eLabFTW into the chatbot's local index (incremental)
 	$(PY) -m lab_chatbot sync
 
-demo:               ## index a synthetic notebook and run the golden questions against it
+demo:               ## index a synthetic notebook and run the test questions against it
 	$(PY) -m lab_chatbot seed-demo
 	$(PY) -m lab_chatbot --db data/chatbot/demo.db eval --full --golden lab_chatbot/golden_demo.json
 

@@ -33,7 +33,8 @@ import pandas as pd
 import streamlit as st
 
 from lab_chatbot.config import ChatbotConfig
-from lab_chatbot.engine import Answer, Engine
+from lab_chatbot.answer import Answer
+from lab_chatbot.engine import Engine
 from lab_chatbot.errors import BackendUnavailable, ChatbotError
 from lab_chatbot.llm_gate import listening
 from lab_chatbot.state import DEBUG_KEY, FULL_SYNC_KEY

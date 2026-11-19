@@ -5,13 +5,10 @@ from datetime import date
 import pytest
 
 from lab_chatbot.errors import BackendUnavailable
-from lab_chatbot.planner import (
-    Planner,
-    detect_language,
-    extract_ids,
-    heuristic_plan,
-    snap,
-)
+from lab_chatbot.language import detect_language
+from lab_chatbot.plan_rules import extract_ids, heuristic_plan
+from lab_chatbot.plan_validation import snap
+from lab_chatbot.planner import Planner
 from lab_chatbot.sql_tools import load_catalog
 from tests.fakes import FakeLLM, plan_json
 
@@ -294,3 +291,23 @@ def test_grounding_tolerates_inflection_and_follow_ups(planner_for):
                {"role": "assistant", "content": "Das sind 102 und 105."}]
     plan = planner.plan("und davon nur die abgeschlossenen?", history)
     assert (plan.filters.tags_all, plan.filters.status) == (["raman"], "Abgeschlossen")
+
+
+def test_prompt_examples_do_not_contain_the_test_questions():
+    """Otherwise the demo test questions measure memorised examples, not the planner."""
+    import json
+    import re
+    from pathlib import Path
+
+    import lab_chatbot
+    from lab_chatbot.planner import PLANNER_EXAMPLES
+
+    def words(text: str) -> set[str]:
+        return set(re.findall(r"\w{4,}", text.lower()))
+
+    examples = [line[3:] for line in PLANNER_EXAMPLES.splitlines() if line.startswith("Q: ")]
+    questions = json.loads((Path(lab_chatbot.__file__).parent / "golden_demo.json").read_text())
+    for case in questions:
+        for example in examples:
+            overlap = words(case["question"]) & words(example)
+            assert len(overlap) <= 1, (case["question"], example, overlap)

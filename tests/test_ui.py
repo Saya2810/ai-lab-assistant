@@ -7,8 +7,8 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from lab_chatbot import ui
-from lab_chatbot.engine import Answer, Table
-from lab_chatbot.planner import Plan
+from lab_chatbot.answer import Answer, Table
+from lab_chatbot.plan import Plan
 from tests.fakes import plan_json
 
 

@@ -87,7 +87,7 @@ Ersetzt die zwei getrennten, ungleich fehlerhaften Implementierungen in `service
 | `cli.py`, `__main__.py` | `sync`, `ask`, `chat`, `search`, `stats`, `eval`, `doctor`, `seed-demo` |
 | `ui.py` | Streamlit-Chat: Streaming, „Verstanden als …“, Tabellen, Quellen, Warnungen, Sync-Button, Beispielfragen |
 | `doctor.py` | prüft FTS5, Ollama, Modelle, Index/Modell-Konsistenz, eLabFTW – mit konkretem Behebungsbefehl |
-| `evaluation.py`, `golden_demo.json` | Golden-Set-Messung: Treffer@k, MRR, Absichts-Genauigkeit, Antwortinhalt |
+| `evaluation.py`, `golden_demo.json` | Messung mit Testfragen: Treffer@k, MRR, Absichts-Genauigkeit, Antwortinhalt |
 | `demo.py` | synthetisches Laborbuch zum Ausprobieren ohne eLabFTW (eigene DB) |
 
 ## 4. Lab Assistant (`lab_assistant/`, portiert aus `app/`)
@@ -144,13 +144,23 @@ Beibehalten, weil gut: die Integritäts-Regeln im Prompt (nichts erfinden/korrig
 * **Oberfläche:** Der Sync-Knopf startet einen Hintergrund-Thread, der Chat bleibt benutzbar, die Seitenleiste zeigt den Fortschritt (Aktualisierung alle 2 s).
 * **Warteschlange** (`llm_gate.py`): faire FIFO-Schlange vor dem Chatmodell, `LAB_MAX_CONCURRENT_LLM`, `LAB_LLM_QUEUE_TIMEOUT`, Anzeige der Position in der UI.
 * **Planner-Katalog:** häufige plus zur Frage passende Tags, Kategorien und Messgrößen (akzent-, präfix- und tippfehlertolerant), Validierung gegen alle Werte. Vorher nur 60 Tags und 80 Messgrößen. Rund 13 ms pro Frage bei 50.000 Experimenten.
-* **Erfundene Filter werden verworfen:** Das 7B-Planermodell hat bei der Frage nach dem Rauschen von Probe A3 alle Tags plus einen Status als Filter gesetzt bzw. Experiment-IDs aus den Prompt-Beispielen übernommen, die Suche fand dann nichts. Tags, Kategorie, Status, Autor und Experiment-IDs bleiben jetzt nur, wenn sie in der Frage oder den letzten Nutzerfragen vorkommen (beugungs- und tippfehlertolerant). Golden-Set der Demo mit dem echten Modell: vorher 8/9, jetzt 9/9.
+* **Erfundene Filter werden verworfen:** Das 7B-Planermodell hat bei der Frage nach dem Rauschen von Probe A3 alle Tags plus einen Status als Filter gesetzt bzw. Experiment-IDs aus den Prompt-Beispielen übernommen, die Suche fand dann nichts. Tags, Kategorie, Status, Autor und Experiment-IDs bleiben jetzt nur, wenn sie in der Frage oder den letzten Nutzerfragen vorkommen (beugungs- und tippfehlertolerant). Testfragen der Demo mit dem echten Modell: vorher 8/9, jetzt 9/9.
 * **Frageprotokoll** (`telemetry.py`): Tabelle `query_log` (neueste 100.000 Zeilen), `LAB_QUERY_LOG`, `python -m lab_chatbot querylog`, eine INFO-Logzeile pro Frage ohne Fragetext. Die Fragen liegen lokal in der Index-Datenbank.
 * **Optionaler Reranker** (`rerank.py`, `LAB_RERANK_MODEL`, Extra `rerank`): bewertet die besten 40 Kandidaten neu, Rückfall auf die normale Reihenfolge bei Fehlern. Noch nicht mit einem echten Modell getestet.
 * **Tests:** `test_vector_index.py`, `test_sync_robust.py`, `test_llm_gate.py`, `test_catalog_scale.py`, `test_telemetry.py`, `test_rerank.py`.
 * **Nicht enthalten:** ANN-Index (HNSW; hnswlib hat hier keine Wheels für Python 3.14, exakte Suche reicht bis einige Millionen Abschnitte, danach Postgres mit pgvector). Ollama bleibt der Durchsatz-Engpass: eine GPU beantwortet eine Frage nach der anderen.
 
-## 9. Bewusst nicht getan / offen
+## 9. Aufräumen von Engine und Planer
+
+Ohne Verhaltensänderung, damit sich der Code weiter pflegen lässt:
+
+* `engine.py` (637 Zeilen) ist jetzt nur noch Ablaufsteuerung (385 Zeilen). Die exakten SQL-Antworten liegen in `structured.py`, die Ergebnistypen in `answer.py`, die Prüfung von Zitaten und Zahlen in `answer_checks.py`. Text- und Bildfrage teilen sich eine Generierung, vorher war der Code dafür doppelt.
+* `planner.py` (715 Zeilen) ist aufgeteilt in `plan.py` (Datentypen und JSON-Schema), `plan_validation.py` (Prüfung gegen Katalog und Frage), `plan_rules.py` (Regeln ohne LLM) und `language.py`. Im Planer selbst bleiben Prompt und LLM-Aufruf (172 Zeilen).
+* Kleinigkeit: Bei Small Talk wird der Katalog nicht mehr unnötig geladen.
+* **Beispiele im Planer-Prompt ersetzt:** 4 der 5 Beispiele waren fast wörtlich Testfragen der Demo (Tag raman, maximale Belichtungszeit, Wellenlänge über 600 nm, Rauschen bei Probe A3). Die Messung war dadurch zu optimistisch. Die neuen Beispiele lehren dasselbe Format mit anderen Themen; ein Test verhindert, dass Testfragen wieder in den Prompt geraten. Mit dem echten Modell weiterhin 9/9, in zwei Läufen, auch beim Inhalt der Antworten.
+* Abgesichert durch die unveränderte Testsuite (369 bestanden, wie vorher), die 9 Testfragen der Demo mit dem echten Modell (9/9), eine Bildfrage mit dem echten Bildmodell und einen Test der Oberfläche.
+
+## 10. Bewusst nicht getan / offen
 
 * Neue Eingabefelder im Assistant müssen in `lab_assistant/state.py` eingetragen werden, damit sie den Seitenwechsel überleben (Buttons und Upload-Feld ausgenommen).
 * `AppTest` kann zwischen `st.Page`-Funktionen nicht wechseln; der echte Seitenwechsel wird nur vom optionalen Browser-Test (`RUN_E2E=1`) abgedeckt.

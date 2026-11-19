@@ -37,8 +37,15 @@ Frage ──► Planner (1 LLM-Aufruf, JSON-Schema)  ──validiert gegen──
 | `sync.py` | inkrementeller Sync: Listing seitenweise gestreamt, Sperre in der DB (`sync_lease`, 180 s), Commit pro Experiment, fortsetzbares `--full`, Fortschritt in der DB, `modified_at`- und Inhalts-Hash-Vergleich, atomares Ersetzen pro Experiment, Löschung verschwundener Einträge, Schutz vor „leeres Listing löscht alles“ |
 | `sql_tools.py` | `Filters`/`MeasurementCond` → WHERE-Builder (nur gebundene Parameter, kein Text-to-SQL), Liste/Zählen/Gruppieren/Aggregieren (über Einheiten hinweg), `Catalog` |
 | `retrieval.py` | Hybridsuche mit RRF, Relevanz-Gates, Cap pro Experiment, leichtes Stemming für die Stichwortsuche |
-| `planner.py` | Absicht + Filter + Messwert-Bedingung aus der Frage; jede Angabe wird gegen den Katalog „gesnappt“ oder verworfen (mit Notiz) |
-| `engine.py` | orchestriert; `ask_stream` liefert Events `plan → tables → sources → token… → final` |
+| `planner.py` | LLM-Planer: Prompt mit dem Katalog zur Frage, eine Anfrage mit JSON-Schema, danach Prüfung; bei Fehlern Rückfall auf die Regeln |
+| `plan.py` | Datentypen: `Plan` (geprüft) und `RawPlan` (rohe, nicht vertrauenswürdige LLM-Ausgabe) mit JSON-Schema |
+| `plan_validation.py` | `normalize_plan`: jede Angabe wird gegen den Katalog „gesnappt“ oder verworfen (mit Notiz); `ground_filters`: Filter, die in der Frage nicht vorkommen, fallen weg |
+| `plan_rules.py` | deterministische Regeln ohne LLM: Experiment-Nummern und ISO-Daten aus der Frage, Small Talk, Regel-Planer als Rückfall |
+| `language.py` | Antwortsprache Deutsch/Englisch aus der Frage |
+| `engine.py` | reine Ablaufsteuerung: Text- und Bildfrage, Suche, eine gemeinsame Generierung; `ask_stream` liefert Events `plan → tables → sources → token… → final`; schreibt das Frageprotokoll |
+| `structured.py` | exakte Antworten aus SQL (Zählen, Listen, Aggregate) und Messwert-Tabellen neben einer Textantwort, über Vorlagen statt LLM |
+| `answer.py` | Ergebnistypen `Answer`, `Source`, `Table` und die Event-Arten |
+| `answer_checks.py` | Prüfung einer generierten Antwort: zitierte Quellen, Zahlen ohne Beleg |
 | `prompts.py` | Antwort-Prompt (Quellen = Daten, nicht Anweisungen), zweisprachige feste Texte |
 | `embeddings.py`, `llm.py` | dünne Ollama-Adapter (Query-/Dokument-Prefix, explizites `num_ctx`, verständliche Fehler); Clients aus `shared/ollama.py` mit Timeout |
 | `vision.py` | liest Bilder mit dem Bildmodell (Chat-Uploads, Bildanhänge beim Sync); hohe Seiten in 3 überlappenden Streifen, alles auf max. 1600 px verkleinert (`shared/images.py`) |
@@ -83,7 +90,7 @@ image_texts(key, model, text, created_at)  -- Cache der Bildlesungen (key = Date
 
 ## Was aus der Vorlage `rag-chatbot-from-scratch` übernommen wurde
 
-Übernommen als **Idee**, nicht als Code: getrennte Dokument-/Query-Embeddings, Ähnlichkeitsschwelle, Metadaten-Filter, ein Golden-Set zur Messung (`evaluation.py`), Konfiguration über Umgebungsvariablen, CLI + Makefile, Tests mit Fakes. **Bewusst nicht übernommen:** FastAPI, LangGraph, Cross-Encoder-Reranking als Standard (Download von Hugging Face, zusätzliche Latenz; Standard bleibt BM25 + RRF, das Reranking ist inzwischen optional über `LAB_RERANK_MODEL` zuschaltbar), DeepEval mit externem Judge-Modell (braucht API-Key), Chroma/FAISS, PDF-Ingestion, Cloud-LLM-Provider.
+Übernommen als **Idee**, nicht als Code: getrennte Dokument-/Query-Embeddings, Ähnlichkeitsschwelle, Metadaten-Filter, Testfragen mit erwarteten Ergebnissen zur Messung (`evaluation.py`), Konfiguration über Umgebungsvariablen, CLI + Makefile, Tests mit Fakes. **Bewusst nicht übernommen:** FastAPI, LangGraph, Cross-Encoder-Reranking als Standard (Download von Hugging Face, zusätzliche Latenz; Standard bleibt BM25 + RRF, das Reranking ist inzwischen optional über `LAB_RERANK_MODEL` zuschaltbar), DeepEval mit externem Judge-Modell (braucht API-Key), Chroma/FAISS, PDF-Ingestion, Cloud-LLM-Provider.
 
 ## Erweiterungspunkte
 
