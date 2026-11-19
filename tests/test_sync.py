@@ -129,4 +129,7 @@ def test_server_with_small_page_cap_is_fully_listed(store, embedder):
 def test_progress_callback(store, embedder, client):
     seen = []
     sync_labbook(client, store, embedder, progress=lambda done, total, msg: seen.append((done, total)))
-    assert seen[0] == (1, 8) and seen[-1] == (8, 8)
+    assert seen[0] == (1, 0) and seen[-1] == (8, 0)  # listing is streamed: total unknown at first
+    seen.clear()
+    sync_labbook(client, store, embedder, progress=lambda done, total, msg: seen.append((done, total)))
+    assert seen[0] == (1, 8) and seen[-1] == (8, 8)  # later runs estimate it from the index

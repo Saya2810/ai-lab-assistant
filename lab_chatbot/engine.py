@@ -29,6 +29,7 @@ from lab_chatbot.errors import BackendUnavailable
 from lab_chatbot.llm import LLM
 from lab_chatbot.planner import Plan, Planner, detect_language
 from lab_chatbot.prompts import ANSWER_SYSTEM, build_answer_prompt, t
+from lab_chatbot.rerank import Reranker
 from lab_chatbot.retrieval import Hit, hybrid_search
 from lab_chatbot.sql_tools import (
     aggregate_measurement,
@@ -38,6 +39,7 @@ from lab_chatbot.sql_tools import (
     measurement_values,
 )
 from lab_chatbot.store import Store
+from lab_chatbot.telemetry import QueryLog
 from lab_chatbot.units import format_number, format_quantity
 from lab_chatbot.vision import ImageReader
 from shared.config import experiment_url
@@ -179,8 +181,12 @@ class Engine:
         config: ChatbotConfig,
         planner: Planner | None = None,
         image_reader: ImageReader | None = None,
+        query_log: QueryLog | None = None,
+        reranker: Reranker | None = None,
     ):
+        self.reranker = reranker
         self.image_reader = image_reader
+        self.query_log = query_log or (QueryLog(store) if config.query_log else None)
         self.store = store
         self.embedder = embedder
         self.llm = llm
@@ -210,8 +216,47 @@ class Engine:
         history: Sequence[dict] | None = None,
         images: Sequence[bytes] | None = None,
     ) -> Iterator[Event]:
+        """Events of ``_ask_stream``; additionally writes one telemetry row per question."""
         started = time.perf_counter()
         latencies: dict[str, float] = {}
+        try:
+            for event in self._ask_stream(question, history, images, started, latencies):
+                if event[0] == "final":
+                    self._record(event[1], bool(images and any(images)))
+                yield event
+        except Exception as exc:
+            latencies["total"] = round((time.perf_counter() - started) * 1000, 1)
+            self._record(None, bool(images and any(images)), (question or "").strip(),
+                         latencies, type(exc).__name__)  # fmt: skip
+            raise
+
+    def _record(self, answer, had_images, question="", latencies=None, error="") -> None:
+        if self.query_log is None:
+            return
+        plan = answer.plan if answer else None
+        question = answer.question if answer else question
+        self.query_log.record(
+            question=question,
+            language=(plan.language if plan else detect_language(question, self.config.default_language)),
+            route=plan.intent if plan else "",
+            used_llm=bool(answer and answer.used_llm),
+            n_sources=len(answer.sources) if answer else 0,
+            n_cited=len(answer.cited) if answer else 0,
+            latencies=answer.latencies if answer else latencies,
+            error=error,
+            chat_model=getattr(self.llm, "model", "") or self.config.chat_model,
+            embed_model=getattr(self.embedder, "model", "") or self.config.embed_model,
+            had_images=had_images,
+        )  # fmt: skip
+
+    def _ask_stream(
+        self,
+        question: str,
+        history: Sequence[dict] | None,
+        images: Sequence[bytes] | None,
+        started: float,
+        latencies: dict[str, float],
+    ) -> Iterator[Event]:
         question = (question or "").strip()
         language = detect_language(question, self.config.default_language)
         images = [img for img in (images or []) if img]
@@ -364,7 +409,7 @@ class Engine:
                     hits = hybrid_search(
                         self.store, self.embedder, query,
                         experiment_ids=candidates, k=self.config.top_k,
-                        min_dense=self.config.min_dense,
+                        min_dense=self.config.min_dense, reranker=self.reranker,
                     )  # fmt: skip
 
         notebook = self._build_sources(hits)
@@ -425,6 +470,7 @@ class Engine:
         hits = hybrid_search(
             self.store, self.embedder, query,
             experiment_ids=candidates, k=cfg.top_k, min_dense=cfg.min_dense,
+            reranker=self.reranker,
         )  # fmt: skip
         if not hits and explicit:
             hits = self.store.chunks_of(sorted(explicit & (candidates or explicit)))[: cfg.top_k]

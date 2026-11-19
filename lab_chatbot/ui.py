@@ -5,7 +5,9 @@
 What the UI does on top of the engine: it streams the answer token by token,
 shows *how the question was understood* (the plan), renders exact SQL results
 as real tables, lists the cited sources with links back into eLabFTW, and
-offers a sync button so the index can be refreshed without a terminal.
+offers a sync button so the index can be refreshed without a terminal (the sync
+runs in the background; progress comes from the database, so a sync started by
+the background worker shows up too).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ if str(_ROOT) not in sys.path:
 import json
 import logging
 import threading
+import time
 from dataclasses import asdict
 from typing import Callable
 
@@ -32,6 +35,7 @@ import streamlit as st
 from lab_chatbot.config import ChatbotConfig
 from lab_chatbot.engine import Answer, Engine
 from lab_chatbot.errors import BackendUnavailable, ChatbotError
+from lab_chatbot.llm_gate import listening
 from lab_chatbot.state import DEBUG_KEY, FULL_SYNC_KEY
 from shared.config import ConfigError, env_str
 from shared.elabftw_client import ElabFTWError
@@ -52,7 +56,9 @@ UI = {
         "sync_running": "Synchronisiere …",
         "sync_no_key": "Kein ELABFTW_API_KEY gesetzt – Sync nicht möglich (siehe .env).",
         "sync_failed": "Sync fehlgeschlagen",
-        "sync_busy": "Ein Sync läuft bereits (von jemand anderem). Bitte gleich nochmal versuchen.",
+        "sync_busy": "Ein Sync läuft bereits (von jemand anderem oder vom Hintergrunddienst).",
+        "sync_started": "Sync gestartet. Er läuft im Hintergrund weiter, der Chat bleibt benutzbar.",
+        "sync_interrupted": "Der letzte Sync wurde unterbrochen. Der nächste macht dort weiter.",
         "clear": "Chat leeren",
         "debug": "Plan & Zeiten anzeigen",
         "placeholder": "Frage zum Laborbuch, optional mit Bild …",
@@ -82,6 +88,7 @@ UI = {
             "chitchat": "Hilfe",
         },
         "backend_error": "Ollama oder ein Modell ist nicht erreichbar",
+        "queue_position": "In der Warteschlange: Position {position} ({active} Anfrage(n) werden gerade beantwortet)",
         "link": "öffnen",
     },
     "en": {
@@ -97,7 +104,9 @@ UI = {
         "sync_running": "Syncing …",
         "sync_no_key": "ELABFTW_API_KEY not set – cannot sync (see .env).",
         "sync_failed": "Sync failed",
-        "sync_busy": "A sync is already running (started by someone else). Try again shortly.",
+        "sync_busy": "A sync is already running (started by someone else or the background worker).",
+        "sync_started": "Sync started. It keeps running in the background; the chat stays usable.",
+        "sync_interrupted": "The last sync was interrupted. The next one continues where it stopped.",
         "clear": "Clear chat",
         "debug": "Show plan & timings",
         "placeholder": "Ask your lab notebook, optionally attach an image …",
@@ -127,6 +136,7 @@ UI = {
             "chitchat": "help",
         },
         "backend_error": "Ollama or a model is not reachable",
+        "queue_position": "In the queue: position {position} ({active} request(s) currently being answered)",
         "link": "open",
     },
 }
@@ -274,24 +284,33 @@ def run_turn(
         extras_box = st.container()
         text = ""
         final: Answer | None = None
+        queue_box = st.empty()
+
+        def on_wait(position: int, active: int) -> None:
+            if position > 0:
+                queue_box.caption(ui["queue_position"].format(position=position, active=active))
+            else:
+                queue_box.empty()
+
         try:
             if images:
                 plan_box.caption(ui["image_reading"])
-            for kind, payload in engine.ask_stream(question, history, images):
-                if kind == "images":
-                    plan_box.empty()
-                    for image_text in payload:
-                        with extras_box.expander(ui["image_text"]):
-                            st.text(image_text)
-                elif kind == "plan":
-                    plan_box.caption(f"{ui['understood']}: {describe_plan(payload, ui)}")
-                elif kind == "tables":
-                    render_tables(tables_box, [asdict(t) for t in payload])
-                elif kind == "token":
-                    text += payload
-                    text_box.markdown(text + " ▌")
-                elif kind == "final":
-                    final = payload
+            with listening(on_wait):
+                for kind, payload in engine.ask_stream(question, history, images):
+                    if kind == "images":
+                        plan_box.empty()
+                        for image_text in payload:
+                            with extras_box.expander(ui["image_text"]):
+                                st.text(image_text)
+                    elif kind == "plan":
+                        plan_box.caption(f"{ui['understood']}: {describe_plan(payload, ui)}")
+                    elif kind == "tables":
+                        render_tables(tables_box, [asdict(t) for t in payload])
+                    elif kind == "token":
+                        text += payload
+                        text_box.markdown(text + " ▌")
+                    elif kind == "final":
+                        final = payload
         except BackendUnavailable as exc:
             st.error(f"{ui['backend_error']}: {exc}")
             return {"role": "assistant", "content": f"{exc}"}
@@ -310,49 +329,74 @@ def run_turn(
         return {"role": "assistant", "content": final.text, "meta": meta}
 
 
-_SYNC_LOCK = threading.Lock()  # one Streamlit server, many users: only one sync at a time
-
-
 def run_sync(engine: Engine, ui: dict, full: bool) -> None:
-    """Sync from eLabFTW; the outcome is parked in session state and shown after the rerun."""
-    if not _SYNC_LOCK.acquire(blocking=False):
+    """Start a sync in a background thread; the sidebar shows its progress.
+
+    The chat stays usable while it runs (a first sync of a large notebook takes
+    hours). Only one sync runs at a time, also across processes: if the
+    background worker or someone else is syncing, nothing is started.
+    """
+    from lab_chatbot.sync import SYNC_LEASE
+
+    if engine.store.lease_holder(SYNC_LEASE):
         st.session_state.sync_result = ("info", ui["sync_busy"])
         return
-    try:
-        _run_sync(engine, ui, full)
-    finally:
-        _SYNC_LOCK.release()
+    thread = threading.Thread(
+        target=_sync_in_background, args=(engine, full), name="lab-chatbot-sync", daemon=True
+    )
+    thread.start()
+    for _ in range(40):  # let the thread take the lease, so the rerun already shows progress
+        if engine.store.lease_holder(SYNC_LEASE):
+            break
+        time.sleep(0.05)
+    st.session_state.sync_result = ("info", ui["sync_started"])
 
 
-def _run_sync(engine: Engine, ui: dict, full: bool) -> None:
+def _sync_in_background(engine: Engine, full: bool) -> None:
     from lab_chatbot.sync import sync_labbook
     from shared.elabftw_client import get_client
 
-    bar = st.sidebar.progress(0.0, text=ui["sync_running"])
-
-    def progress(done: int, total: int, message: str) -> None:
-        bar.progress(min(done / total, 1.0) if total else 0.0, text=f"{ui['sync_running']} {done}/{total}")
-
+    options = {}
+    if engine.config.index_images and engine.image_reader is not None:
+        options = {
+            "image_reader": engine.image_reader,
+            "max_image_bytes": int(engine.config.max_image_mb * 1024 * 1024),
+            "max_images_per_experiment": engine.config.max_images_per_experiment,
+        }
     try:
-        options = {}
-        if engine.config.index_images and engine.image_reader is not None:
-            options = {
-                "image_reader": engine.image_reader,
-                "max_image_bytes": int(engine.config.max_image_mb * 1024 * 1024),
-                "max_images_per_experiment": engine.config.max_images_per_experiment,
-            }
-        report = sync_labbook(
-            get_client(), engine.store, engine.embedder, full=full, progress=progress, **options
-        )
-    except (ChatbotError, ElabFTWError, ConfigError) as exc:
-        st.session_state.sync_result = ("error", f"{ui['sync_failed']}: {exc}")
-        return
-    finally:
-        bar.empty()
-    text = report.summary()
-    if report.failed:
-        text += "\n\n" + "\n".join(f"- {i}: {e}" for i, e in report.failed[:5])
-    st.session_state.sync_result = ("warning" if report.failed else "success", text)
+        sync_labbook(get_client(), engine.store, engine.embedder, full=full, **options)
+    except Exception:  # noqa: BLE001 - the outcome is in the sync status the sidebar shows
+        log.exception("Background sync failed")
+
+
+def render_index_panel(engine: Engine, config: ChatbotConfig, ui: dict) -> None:
+    stats = engine.store.stats()
+    st.metric(ui["experiments"], stats["experiments"])
+    st.caption(
+        f"{ui['chunks']}: {stats['chunks']} · {ui['last_sync']}: {stats['last_sync'] or ui['never']}\n\n"
+        f"`{config.chat_model}` · `{config.embed_model}`"
+    )
+    render_sync_status(engine, ui)
+
+
+def render_sync_status(engine: Engine, ui: dict) -> bool:
+    """Progress of the running or last sync (from the database). True while one runs."""
+    from lab_chatbot.sync import sync_status
+
+    status = sync_status(engine.store)
+    state = status.get("state")
+    if state == "running":
+        done, total = int(status.get("done") or 0), int(status.get("total") or 0)
+        label = f"{ui['sync_running']} {done}/{total}" if total else f"{ui['sync_running']} {done}"
+        st.progress(min(done / total, 1.0) if total else 0.0, text=label)
+        return True
+    if state == "failed":
+        st.error(f"{ui['sync_failed']}: {status.get('error', '')}")
+    elif state == "interrupted":
+        st.warning(ui["sync_interrupted"])
+    elif state in ("done", "stopped") and status.get("summary"):
+        st.caption(f"{ui['last_sync']}: {status['summary']}")
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -372,12 +416,13 @@ def render_app(engine_provider: Callable[[], Engine], config: ChatbotConfig, emb
     # ---- sidebar
     with st.sidebar:
         st.header(ui["index"])
-        stats = engine.store.stats()
-        st.metric(ui["experiments"], stats["experiments"])
-        st.caption(
-            f"{ui['chunks']}: {stats['chunks']} · {ui['last_sync']}: {stats['last_sync'] or ui['never']}\n\n"
-            f"`{config.chat_model}` · `{config.embed_model}`"
-        )
+        from lab_chatbot.sync import sync_status
+
+        if sync_status(engine.store).get("state") == "running":
+            # numbers and progress refresh on their own while a sync runs
+            st.fragment(run_every=2.0)(render_index_panel)(engine, config, ui)
+        else:
+            render_index_panel(engine, config, ui)
         has_key = bool(env_str("ELABFTW_API_KEY"))
         full = st.checkbox(ui["sync_full"], value=False, disabled=not has_key, key=FULL_SYNC_KEY)
         if st.button(ui["sync"], disabled=not has_key, width="stretch"):
@@ -397,7 +442,7 @@ def render_app(engine_provider: Callable[[], Engine], config: ChatbotConfig, emb
     # ---- main
     st.title(ui["title"])
     st.caption(ui["caption"])
-    if stats["experiments"] == 0:
+    if engine.store.experiment_count() == 0:
         st.info(ui["empty_hint"])
 
     messages: list[dict] = st.session_state.messages

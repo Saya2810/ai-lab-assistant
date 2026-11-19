@@ -17,6 +17,7 @@ HELP_EPILOG = """\
 typical first run:
   python -m lab_chatbot doctor      check Ollama, models, eLabFTW, index
   python -m lab_chatbot sync        read eLabFTW into the local index
+  python -m lab_chatbot worker      keep it current in the background (large notebooks)
   python -m lab_chatbot chat        talk to it (or: streamlit run lab_chatbot/ui.py)
 no eLabFTW at hand?
   python -m lab_chatbot seed-demo   index a synthetic notebook (separate database)
@@ -88,7 +89,7 @@ def cmd_sync(args, config) -> int:
     from shared.elabftw_client import get_client
 
     def progress(done: int, total: int, message: str) -> None:
-        print(f"\r  {done}/{total} {message:<30}", end="", file=sys.stderr, flush=True)
+        print(f"\r  {done}/{total or '?'} {message:<30}", end="", file=sys.stderr, flush=True)
 
     report = sync_labbook(
         get_client(), build_store(config), build_embedder(config),
@@ -100,6 +101,15 @@ def cmd_sync(args, config) -> int:
     for experiment_id, error in report.failed:
         print(f"  ✗ experiment {experiment_id}: {error}", file=sys.stderr)
     return 1 if report.failed else 0
+
+
+def cmd_worker(args, config) -> int:
+    from lab_chatbot.worker import run_worker
+
+    logging.getLogger().setLevel(logging.INFO)
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    return run_worker(config, once=args.once, full_first=args.full, interval=args.interval)
 
 
 def cmd_ask(args, config) -> int:
@@ -198,6 +208,28 @@ def cmd_seed_demo(args, config) -> int:
     return 0
 
 
+def cmd_querylog(args, config) -> int:
+    from lab_chatbot.factory import build_store
+    from lab_chatbot.telemetry import last_rows, summary
+
+    store = build_store(config)
+    if args.last:
+        for row in reversed(last_rows(store, args.last)):
+            question = row["question"].replace("\n", " ")[:60]
+            print(
+                f"{row['ts']}  {row['total_ms']:>7.0f}ms  {row['route'] or '-':<9} "
+                f"src={row['n_sources']:<2} {row['error'] or '-':<18} {question}"
+            )
+        return 0
+    s = summary(store, args.days)
+    print(f"last {args.days:g} days: {s['count']} questions, {s['errors']} errors ({s['error_rate']:.1%})")
+    print(f"search without sources: {s['no_sources']}/{s['search_count']} ({s['no_sources_share']:.1%})")
+    print(f"{'step':<10} {'p50 ms':>9} {'p95 ms':>9}")
+    for name, st in [("total", s["total_ms"]), *s["steps_ms"].items()]:
+        print(f"{name:<10} {st['p50']:>9.0f} {st['p95']:>9.0f}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lab_chatbot", description="Ask your eLabFTW lab notebook.",
@@ -212,6 +244,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force-empty", action="store_true", help="allow an empty listing to clear the index")
     p.add_argument("--limit", type=int, help="only the first N experiments (testing)")
     p.set_defaults(func=cmd_sync)
+
+    p = sub.add_parser("worker", help="keep the index current in the background (sync every N s)")
+    p.add_argument("--interval", type=float, help="seconds between syncs (default LAB_SYNC_INTERVAL, 900)")
+    p.add_argument("--once", action="store_true", help="one sync, then exit (for cron/systemd timers)")
+    p.add_argument("--full", action="store_true", help="re-process every experiment in the first round")
+    p.set_defaults(func=cmd_worker)
 
     p = sub.add_parser("ask", help="ask one question")
     p.add_argument("question")
@@ -235,6 +273,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--golden", required=True, help="JSON file with questions and expectations")
     p.add_argument("--full", action="store_true", help="also run the LLM to check expect_contains")
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("querylog", help="latency and failure summary of answered questions")
+    p.add_argument("--days", type=float, default=7, help="summary window in days (default 7)")
+    p.add_argument("--last", type=int, metavar="N", help="print the last N questions instead")
+    p.set_defaults(func=cmd_querylog)
 
     sub.add_parser("seed-demo", help="index a synthetic demo notebook").set_defaults(func=cmd_seed_demo)
     return parser

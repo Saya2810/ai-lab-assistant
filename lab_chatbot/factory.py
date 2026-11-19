@@ -6,12 +6,14 @@ from lab_chatbot.config import ChatbotConfig
 from lab_chatbot.embeddings import OllamaEmbedder
 from lab_chatbot.engine import Engine
 from lab_chatbot.llm import OllamaLLM
+from lab_chatbot.llm_gate import get_gate
+from lab_chatbot.rerank import build_reranker
 from lab_chatbot.store import Store
 from lab_chatbot.vision import OllamaImageReader
 
 
 def build_store(config: ChatbotConfig) -> Store:
-    return Store(config.db_path)
+    return Store(config.db_path, vector_dims=config.vector_dims)
 
 
 def build_embedder(config: ChatbotConfig) -> OllamaEmbedder:
@@ -26,6 +28,8 @@ def build_llm(config: ChatbotConfig) -> OllamaLLM:
         host=config.ollama_host,
         num_ctx=config.num_ctx,
         timeout=config.ollama_timeout,
+        gate=get_gate(config.ollama_host, config.max_concurrent_llm),
+        queue_timeout=config.llm_queue_timeout,
     )
 
 
@@ -43,4 +47,5 @@ def build_engine(config: ChatbotConfig | None = None) -> Engine:
         build_llm(config),
         config,
         image_reader=build_image_reader(config),
+        reranker=build_reranker(config),
     )

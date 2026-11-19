@@ -16,14 +16,21 @@ If nothing passes, the caller answers "nothing found" *without* calling the LLM.
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from lab_chatbot.embeddings import Embedder
 from lab_chatbot.store import Store
+
+if TYPE_CHECKING:
+    from lab_chatbot.rerank import Reranker
+
+logger = logging.getLogger(__name__)
 
 STOPWORDS = frozenset(
     """
@@ -94,6 +101,7 @@ class Hit:
     dense: float | None
     lexical_rank: int | None
     fused: float
+    rerank: float | None = None
 
 
 def _lexical_ok(tokens: list[str], text: str) -> bool:
@@ -114,6 +122,8 @@ def hybrid_search(
     min_dense: float = 0.30,
     rrf_k: int = 60,
     per_experiment: int = 2,
+    reranker: Reranker | None = None,
+    rerank_pool: int = 40,
 ) -> list[Hit]:
     """Best chunks for ``query`` (optionally only inside ``experiment_ids``)."""
     if experiment_ids is not None and not experiment_ids:
@@ -122,29 +132,24 @@ def hybrid_search(
     # ---- dense ranking
     dense_scores: dict[int, float] = {}
     dense_rank: list[int] = []
-    data = store.vector_data(embedder.model)
+    index = store.vector_data(embedder.model)
     query_vec = None
-    if len(data.cids):
-        if experiment_ids is None:
-            rows_idx = None
-        else:
+    if len(index):
+        wanted = None
+        if experiment_ids is not None:
             wanted = np.fromiter(experiment_ids, dtype=np.int64, count=len(experiment_ids))
-            rows_idx = np.flatnonzero(np.isin(data.exp_ids, wanted))
-        if rows_idx is None or len(rows_idx):
-            query_vec = embedder.embed_query(query)
-            if rows_idx is None:
-                cids, sims = data.cids, data.matrix @ query_vec
-            elif len(rows_idx) * 2 > len(data.cids):
-                # large candidate set: one full product is cheaper than copying most rows
-                cids, sims = data.cids[rows_idx], (data.matrix @ query_vec)[rows_idx]
-            else:
-                cids, sims = data.cids[rows_idx], data.matrix[rows_idx] @ query_vec
-            # Only the top candidates are needed: argpartition is O(n), a full sort O(n log n).
-            take = min(dense_k, len(sims))
-            top = np.argpartition(-sims, take - 1)[:take]
-            top = top[np.argsort(-sims[top], kind="stable")]
-            dense_scores = {int(cids[i]): float(sims[i]) for i in top}
-            dense_rank = [int(cids[i]) for i in top if sims[i] >= min_dense]
+        query_vec = embedder.embed_query(query)
+        # With reduced dimensions the in-memory search is approximate: take a wider
+        # pool and re-score it with the full vectors, so the final order is exact.
+        pool = dense_k * 4 if index.reduced else dense_k
+        cids, sims = index.search(index.query_vector(query_vec), pool, wanted)
+        if index.reduced and len(cids):
+            exact = store.similarities(embedder.model, cids.tolist(), query_vec)
+            ranked = sorted(exact.items(), key=lambda kv: (-kv[1], kv[0]))[:dense_k]
+        else:
+            ranked = [(int(c), float(v)) for c, v in zip(cids, sims)]
+        dense_scores = dict(ranked)
+        dense_rank = [cid for cid, sim in ranked if sim >= min_dense]
 
     # ---- lexical ranking (BM25)
     tokens = query_tokens(query)
@@ -154,14 +159,7 @@ def hybrid_search(
     lexical_rank = [cid for cid in lexical_cids if cid in rows and _lexical_ok(tokens, rows[cid].text)]
     missing = [cid for cid in lexical_rank if cid not in dense_scores]
     if missing and query_vec is not None:
-        # data.cids is sorted (ORDER BY cid), so the rows of keyword hits are found by bisection
-        wanted = np.asarray(missing, dtype=np.int64)
-        pos = np.searchsorted(data.cids, wanted)
-        pos = np.clip(pos, 0, len(data.cids) - 1)
-        found = data.cids[pos] == wanted
-        if found.any():
-            sims = data.matrix[pos[found]] @ query_vec
-            dense_scores.update({int(c): float(v) for c, v in zip(wanted[found], sims)})
+        dense_scores.update(store.similarities(embedder.model, missing, query_vec))
 
     # ---- reciprocal rank fusion
     fused: dict[int, float] = {}
@@ -169,28 +167,45 @@ def hybrid_search(
         for rank, cid in enumerate(ranking, start=1):
             fused[cid] = fused.get(cid, 0.0) + 1.0 / (rrf_k + rank)
 
-    hits: list[Hit] = []
-    per_exp: dict[int, int] = {}
-    for cid, score in sorted(fused.items(), key=lambda kv: (-kv[1], kv[0])):
-        row = rows.get(cid)
-        if row is None:
-            continue
-        if per_exp.get(row.experiment_id, 0) >= per_experiment:
-            continue
-        per_exp[row.experiment_id] = per_exp.get(row.experiment_id, 0) + 1
-        hits.append(
-            Hit(
-                cid=cid,
-                experiment_id=row.experiment_id,
-                idx=row.idx,
-                text=row.text,
-                title=row.title,
-                date=row.date,
-                dense=dense_scores.get(cid),
-                lexical_rank=(lexical_rank.index(cid) + 1) if cid in lexical_rank else None,
-                fused=score,
-            )
+    def make_hit(cid: int, score: float) -> Hit:
+        row = rows[cid]
+        return Hit(
+            cid=cid,
+            experiment_id=row.experiment_id,
+            idx=row.idx,
+            text=row.text,
+            title=row.title,
+            date=row.date,
+            dense=dense_scores.get(cid),
+            lexical_rank=(lexical_rank.index(cid) + 1) if cid in lexical_rank else None,
+            fused=score,
         )
-        if len(hits) >= k:
+
+    ordered = [(cid, score) for cid, score in sorted(fused.items(), key=lambda kv: (-kv[1], kv[0])) if cid in rows]
+
+    if reranker is not None and len(ordered) > 1:
+        pool = [make_hit(cid, score) for cid, score in ordered[: max(rerank_pool, k)]]
+        try:
+            scores = reranker.score(query, [h.text for h in pool])
+            if len(scores) != len(pool):
+                raise ValueError(f"reranker returned {len(scores)} scores for {len(pool)} texts")
+            scored = [replace(h, rerank=float(s)) for h, s in zip(pool, scores)]
+            scored.sort(key=lambda h: -h.rerank)  # stable: ties keep the fused order
+            return _cap_and_limit(scored, per_experiment, k)
+        except Exception as exc:  # retrieval must never fail because of the reranker
+            logger.warning("Reranking failed, using fused order: %s", exc)
+
+    return _cap_and_limit([make_hit(cid, score) for cid, score in ordered], per_experiment, k)
+
+
+def _cap_and_limit(hits: list[Hit], per_experiment: int, k: int) -> list[Hit]:
+    out: list[Hit] = []
+    per_exp: dict[int, int] = {}
+    for hit in hits:
+        if per_exp.get(hit.experiment_id, 0) >= per_experiment:
+            continue
+        per_exp[hit.experiment_id] = per_exp.get(hit.experiment_id, 0) + 1
+        out.append(hit)
+        if len(out) >= k:
             break
-    return hits
+    return out

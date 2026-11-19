@@ -271,6 +271,6 @@ def test_retrieve_only_for_all_intents(make_engine):
     plan, ids, hits = engine.retrieve_only("Rauschen Probe A3")
     assert ids[0] == 102 and hits and llm.stream_calls == []
     engine, _ = make_engine(plan_json("count", filters={"tags_all": ["raman"]}))
-    assert engine.retrieve_only("x")[1] == []
+    assert engine.retrieve_only("Wie viele Raman?")[1] == []
     engine, _ = make_engine(plan_json("list", filters={"tags_all": ["raman"]}))
-    assert sorted(engine.retrieve_only("x")[1]) == [102, 105]
+    assert sorted(engine.retrieve_only("Liste Raman")[1]) == [102, 105]

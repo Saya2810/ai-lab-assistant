@@ -195,5 +195,6 @@ def test_dense_search_ranks_the_same_with_and_without_candidates(demo_store, emb
 
 def test_vector_matrix_is_built_in_one_pass(demo_store, embedder):
     data = demo_store.vector_data(embedder.model)
+    assert len(data.segments) == 1
     assert data.matrix.dtype == np.float32 and data.matrix.flags["C_CONTIGUOUS"]
     assert list(data.cids) == sorted(data.cids) and len(data.cids) == len(data.exp_ids)

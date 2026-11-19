@@ -135,10 +135,25 @@ Beibehalten, weil gut: die Integritäts-Regeln im Prompt (nichts erfinden/korrig
 * **Versionsgrenzen** nach oben für alle Abhängigkeiten, **CI** (`.github/workflows/tests.yml`) mit Python 3.10 und 3.12.
 * Emojis aus den Oberflächen entfernt. Der Doctor-Test hing vom lokalen Whisper-Modell ab, Audio ist jetzt immer optional.
 
-## 8. Bewusst nicht getan / offen
+## 8. Skalierung, Hintergrund-Sync, Warteschlange, Protokoll
+
+* **Vektorindex:** Kein vollständiges Neuladen mehr bei Änderungen. Neue Abschnitte als Delta-Segmente (Chunk-IDs sind AUTOINCREMENT), gelöschte in der Tabelle `chunk_tombstones` als tot markiert, kleine Segmente werden zusammengeführt, ab über 25 % toten Zeilen wird verdichtet. Während ein Thread aktualisiert, nutzen andere den alten Stand. Gemessen (400.000 Abschnitte, 768 Dim.): Laden 1,4 s, 1,2 GB, Suche 25 ms, Aktualisierung nach 50 Experimenten 9 ms.
+* **`LAB_VECTOR_DIMS`:** Für Matryoshka-Modelle nur die ersten N Dimensionen im Speicher, Kandidaten werden mit den vollen Vektoren neu bewertet (exaktes Ranking, kein Re-Index). Mit 256: 416 MB, Suche 22 ms.
+* **Sync:** Listing seitenweise (konstanter Speicher), nur ein Sync gleichzeitig auch prozessübergreifend (Sperre in der Datenbank, 180 s Ablauf), jedes Experiment einzeln committet, `--full` setzt nach Abbruch fort, Löschen nur bei vollständig gelesenem Listing, Fortschritt in der Datenbank, danach FTS-Optimierung und WAL-Kürzung.
+* **Worker:** `python -m lab_chatbot worker` (`--once`, `--full`, `--interval N`, `LAB_SYNC_INTERVAL`), exponentielles Warten bis 1 h bei Ausfällen, sauberes Beenden per SIGTERM/Strg-C.
+* **Oberfläche:** Der Sync-Knopf startet einen Hintergrund-Thread, der Chat bleibt benutzbar, die Seitenleiste zeigt den Fortschritt (Aktualisierung alle 2 s).
+* **Warteschlange** (`llm_gate.py`): faire FIFO-Schlange vor dem Chatmodell, `LAB_MAX_CONCURRENT_LLM`, `LAB_LLM_QUEUE_TIMEOUT`, Anzeige der Position in der UI.
+* **Planner-Katalog:** häufige plus zur Frage passende Tags, Kategorien und Messgrößen (akzent-, präfix- und tippfehlertolerant), Validierung gegen alle Werte. Vorher nur 60 Tags und 80 Messgrößen. Rund 13 ms pro Frage bei 50.000 Experimenten.
+* **Erfundene Filter werden verworfen:** Das 7B-Planermodell hat bei der Frage nach dem Rauschen von Probe A3 alle Tags plus einen Status als Filter gesetzt bzw. Experiment-IDs aus den Prompt-Beispielen übernommen, die Suche fand dann nichts. Tags, Kategorie, Status, Autor und Experiment-IDs bleiben jetzt nur, wenn sie in der Frage oder den letzten Nutzerfragen vorkommen (beugungs- und tippfehlertolerant). Golden-Set der Demo mit dem echten Modell: vorher 8/9, jetzt 9/9.
+* **Frageprotokoll** (`telemetry.py`): Tabelle `query_log` (neueste 100.000 Zeilen), `LAB_QUERY_LOG`, `python -m lab_chatbot querylog`, eine INFO-Logzeile pro Frage ohne Fragetext. Die Fragen liegen lokal in der Index-Datenbank.
+* **Optionaler Reranker** (`rerank.py`, `LAB_RERANK_MODEL`, Extra `rerank`): bewertet die besten 40 Kandidaten neu, Rückfall auf die normale Reihenfolge bei Fehlern. Noch nicht mit einem echten Modell getestet.
+* **Tests:** `test_vector_index.py`, `test_sync_robust.py`, `test_llm_gate.py`, `test_catalog_scale.py`, `test_telemetry.py`, `test_rerank.py`.
+* **Nicht enthalten:** ANN-Index (HNSW; hnswlib hat hier keine Wheels für Python 3.14, exakte Suche reicht bis einige Millionen Abschnitte, danach Postgres mit pgvector). Ollama bleibt der Durchsatz-Engpass: eine GPU beantwortet eine Frage nach der anderen.
+
+## 9. Bewusst nicht getan / offen
 
 * Neue Eingabefelder im Assistant müssen in `lab_assistant/state.py` eingetragen werden, damit sie den Seitenwechsel überleben (Buttons und Upload-Feld ausgenommen).
 * `AppTest` kann zwischen `st.Page`-Funktionen nicht wechseln; der echte Seitenwechsel wird nur vom optionalen Browser-Test (`RUN_E2E=1`) abgedeckt.
 * Kein Test gegen echten eLabFTW-/Ollama-Betrieb (siehe README „Bekannte Grenzen“).
 * Keine Rechteprüfung pro Nutzer im Chatbot-Index.
-* Kein Reranker, kein Hintergrund-Sync, keine PDF-Anhänge oder Ressourcen im Index (Bildanhänge optional, siehe 7).
+* Reranker nur optional und ungetestet, kein ANN-Index (siehe 8), keine PDF-Anhänge oder Ressourcen im Index (Bildanhänge optional, siehe 7).

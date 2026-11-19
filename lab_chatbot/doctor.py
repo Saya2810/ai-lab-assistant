@@ -22,6 +22,16 @@ def check_fts5() -> Check:
         return Check("SQLite FTS5", False, "this Python's SQLite lacks FTS5; keyword search needs it")
 
 
+def check_rerank(config: ChatbotConfig) -> list[Check]:
+    if not config.rerank_model:
+        return []
+    import importlib.util
+
+    if importlib.util.find_spec("sentence_transformers") is None:
+        return [Check("Reranker", False, f"LAB_RERANK_MODEL={config.rerank_model} needs: pip install sentence-transformers", critical=False)]
+    return [Check("Reranker", True, f"sentence-transformers available; model {config.rerank_model}", critical=False)]
+
+
 def check_index(config: ChatbotConfig) -> list[Check]:
     checks = []
     try:
@@ -117,7 +127,7 @@ def check_live(config: ChatbotConfig) -> list[Check]:
 
 def run_doctor(config: ChatbotConfig, live: bool = False) -> list[Check]:
     """``live`` also calls the models once (slow on a cold start: the model is loaded into memory)."""
-    checks = [check_fts5(), *check_index(config), *check_ollama(config), *check_elabftw()]
+    checks = [check_fts5(), *check_index(config), *check_rerank(config), *check_ollama(config), *check_elabftw()]
     ollama_ready = all(c.ok for c in checks if c.name in ("Ollama", "Chat model", "Embedding model"))
     if live and ollama_ready:
         checks += check_live(config)

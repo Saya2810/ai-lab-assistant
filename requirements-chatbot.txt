@@ -8,3 +8,4 @@ Pillow>=10.0,<13           # reading images (chat uploads, LAB_INDEX_IMAGES)
 requests>=2.31,<3
 urllib3>=2.0,<3
 python-dotenv>=1.0,<2
+# sentence-transformers>=3,<6  # optional: cross-encoder reranking (LAB_RERANK_MODEL); pulls torch

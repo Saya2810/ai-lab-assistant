@@ -9,13 +9,19 @@ build the SQL. User text never becomes SQL; it only ever becomes parameters.
 
 from __future__ import annotations
 
+import bisect
+import difflib
+import re
 import statistics
+import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
+from lab_chatbot.retrieval import fold, query_tokens
 from lab_chatbot.store import Store, id_list, norm
 from lab_chatbot.units import from_si, lookup_unit, to_si, unit_norm
 
+_WORDS = re.compile(r"\w+", re.UNICODE)
 OPS = {">", ">=", "<", "<=", "=", "between"}
 GROUP_BYS = {"tag", "category", "status", "author", "month"}
 ORDERS = {
@@ -339,6 +345,123 @@ class CatalogMeasurement:
     dimension: str | None
 
 
+class _NameIndex:
+    """All distinct values of one kind (tags, categories, ...) with a word index.
+
+    ``entries`` are (display, norm, count) sorted by count descending; matching works on
+    accent-folded text so 'Größe' meets 'grosse'.
+    """
+
+    def __init__(self, entries: list[tuple[str, str, int]]):
+        self.entries = entries
+        self.folded = [fold(n) for _, n, _ in entries]
+        self.by_norm = {n: i for i, (_, n, _) in enumerate(entries)}
+        words: dict[str, list[int]] = defaultdict(list)
+        for i, text in enumerate(self.folded):
+            for w in set(_WORDS.findall(text)):
+                words[w].append(i)
+        self.words = words
+        self.sorted_words = sorted(words)
+
+    def frequent(self, limit: int) -> list[int]:
+        return list(range(min(limit, len(self.entries))))
+
+    def relevant(self, question: str, tokens: list[str], limit: int) -> list[int]:
+        """Indexes of entries that the question names (exact, prefix/substring, or typo)."""
+        folded_q = fold(question)
+        hits: set[int] = set()
+        # 1. the whole value occurs in the question
+        padded = f" {' '.join(_WORDS.findall(folded_q))} "
+        for i, text in enumerate(self.folded):
+            if len(text) >= 3 and (
+                f" {text} " in padded or (len(text) >= 5 and text in folded_q)
+            ):
+                hits.add(i)
+        # 2. a question token matches a word of the value (exact, prefix, or fuzzy)
+        for tok in tokens:
+            if len(tok) < 3:
+                continue
+            if tok in self.words:
+                hits.update(self.words[tok])
+            if len(tok) >= 4:
+                stem_ = tok[: max(4, len(tok) - 2)]
+                lo = bisect.bisect_left(self.sorted_words, stem_)
+                for w in self.sorted_words[lo:]:
+                    if not w.startswith(stem_):
+                        break
+                    hits.update(self.words[w])
+                for w in difflib.get_close_matches(tok, self.sorted_words, n=3, cutoff=0.84):
+                    hits.update(self.words[w])
+        return sorted(hits)[:limit]
+
+
+class _FullCatalog:
+    """Process-level snapshot of every distinct name, valid for one store revision."""
+
+    def __init__(self, store: Store):
+        with store.connect() as con:
+            head = con.execute(
+                "SELECT COUNT(*), MIN(NULLIF(date, '')), MAX(NULLIF(date, '')) FROM experiments"
+            ).fetchone()
+            self.head = (head[0], head[1] or "", head[2] or "")
+            self.tags = _NameIndex(
+                [
+                    (r[0], r[1], r[2])
+                    for r in con.execute(
+                        "SELECT MIN(tag), tag_norm, COUNT(*) AS n FROM exp_tags "
+                        "GROUP BY tag_norm ORDER BY n DESC, 1"
+                    )
+                ]
+            )
+            self.columns: dict[str, _NameIndex] = {}
+            for column in ("category", "status", "author"):
+                self.columns[column] = _NameIndex(
+                    [
+                        (r[0], norm(r[0]), r[1])
+                        for r in con.execute(
+                            f"SELECT MIN({column}), COUNT(*) AS n FROM experiments "
+                            f"WHERE {column} != '' GROUP BY lower({column}) ORDER BY n DESC, 1"
+                        )
+                    ]
+                )
+            units: dict[str, tuple[int, str, str | None]] = {}
+            for r in con.execute(
+                "SELECT name_norm, unit, MIN(dimension), COUNT(*) AS n FROM measurements "
+                "WHERE unit IS NOT NULL GROUP BY name_norm, unit"
+            ):
+                if r[0] not in units or r[3] > units[r[0]][0]:
+                    units[r[0]] = (r[3], r[1], r[2])
+            rows = con.execute(
+                "SELECT MIN(name), name_norm, COUNT(*) AS n FROM measurements "
+                "GROUP BY name_norm ORDER BY n DESC, 1"
+            ).fetchall()
+        self.measurements = _NameIndex([(r[0], r[1], r[2]) for r in rows])
+        self.measurement_info = {
+            n: CatalogMeasurement(name, count, units[n][1] if n in units else None,
+                                  units[n][2] if n in units else None)
+            for name, n, count in self.measurements.entries
+        }  # fmt: skip
+
+
+_full_cache: dict[str, tuple[int, _FullCatalog]] = {}
+_full_lock = threading.Lock()
+
+
+def _full_catalog(store: Store) -> _FullCatalog:
+    key = str(store.path.resolve())
+    revision = store.revision()
+    cached = _full_cache.get(key)
+    if cached and cached[0] == revision:
+        return cached[1]
+    with _full_lock:
+        cached = _full_cache.get(key)
+        if cached and cached[0] == revision:
+            return cached[1]
+        full = _FullCatalog(store)
+        _full_cache[key] = (revision, full)
+        return full
+
+
 @dataclass
 class Catalog:
     n_experiments: int = 0
@@ -349,51 +472,81 @@ class Catalog:
     statuses: list[str] = field(default_factory=list)
     authors: list[str] = field(default_factory=list)
     measurements: list[CatalogMeasurement] = field(default_factory=list)
+    # Every distinct name in the store (None: only the lists above are known). Used to
+    # validate plan values, so a rare name that did not fit the prompt still survives.
+    all_tags: list[str] | None = field(default=None, repr=False)
+    all_categories: list[str] | None = field(default=None, repr=False)
+    all_statuses: list[str] | None = field(default=None, repr=False)
+    all_authors: list[str] | None = field(default=None, repr=False)
+    all_measurements: dict[str, CatalogMeasurement] | None = field(default=None, repr=False)
 
     def measurement(self, name: str) -> CatalogMeasurement | None:
         key = norm(name)
-        return next((m for m in self.measurements if norm(m.name) == key), None)
+        found = next((m for m in self.measurements if norm(m.name) == key), None)
+        if found is None and self.all_measurements is not None:
+            found = self.all_measurements.get(key)
+        return found
+
+    def tag_options(self) -> list[str]:
+        return self.tags if self.all_tags is None else self.all_tags
+
+    def category_options(self) -> list[str]:
+        return self.categories if self.all_categories is None else self.all_categories
+
+    def status_options(self) -> list[str]:
+        return self.statuses if self.all_statuses is None else self.all_statuses
+
+    def author_options(self) -> list[str]:
+        return self.authors if self.all_authors is None else self.all_authors
+
+    def measurement_names(self) -> list[str]:
+        if self.all_measurements is None:
+            return [m.name for m in self.measurements]
+        return [m.name for m in self.all_measurements.values()]
 
 
-def load_catalog(store: Store, max_tags: int = 60, max_measurements: int = 80) -> Catalog:
-    with store.connect() as con:
-        head = con.execute(
-            "SELECT COUNT(*), MIN(NULLIF(date, '')), MAX(NULLIF(date, '')) FROM experiments"
-        ).fetchone()
-        tags = [
-            r[0]
-            for r in con.execute(
-                "SELECT MIN(tag) FROM exp_tags GROUP BY tag_norm ORDER BY COUNT(*) DESC, 1 LIMIT ?",
-                (max_tags,),
-            )
-        ]
+def load_catalog(
+    store: Store,
+    max_tags: int = 40,
+    max_measurements: int = 40,
+    question: str | None = None,
+    max_total_tags: int = 120,
+    max_total_measurements: int = 120,
+) -> Catalog:
+    """Names that exist in the notebook: the most frequent ones plus those the question names.
 
-        def distinct(column: str) -> list[str]:
-            return [
-                r[0]
-                for r in con.execute(
-                    f"SELECT {column} FROM experiments WHERE {column} != '' "
-                    f"GROUP BY lower({column}) ORDER BY COUNT(*) DESC, 1 LIMIT 40"
-                )
+    With ``question=None`` only the frequent part is returned. The full distinct sets are
+    cached per store revision and attached for plan validation.
+    """
+    full = _full_catalog(store)
+    tokens = query_tokens(question) if question else []
+
+    def pick(index: _NameIndex, n_frequent: int, total: int) -> list[int]:
+        chosen = index.frequent(n_frequent)
+        if question:
+            seen = set(chosen)
+            extra = [
+                i for i in index.relevant(question, tokens, total * 4) if i not in seen
             ]
+            extra.sort(key=lambda i: i)  # entries are sorted by frequency
+            chosen += extra[: max(0, total - len(chosen))]
+        return chosen
 
-        categories, statuses, authors = distinct("category"), distinct("status"), distinct("author")
-        meas_rows = con.execute(
-            "SELECT MIN(name) AS name, name_norm, COUNT(*) AS n FROM measurements "
-            "GROUP BY name_norm ORDER BY n DESC, name LIMIT ?",
-            (max_measurements,),
-        ).fetchall()
-        measurements = []
-        for row in meas_rows:
-            units = con.execute(
-                "SELECT unit, dimension, COUNT(*) AS n FROM measurements WHERE name_norm = ? "
-                "AND unit IS NOT NULL GROUP BY unit ORDER BY n DESC LIMIT 1",
-                (row["name_norm"],),
-            ).fetchone()
-            measurements.append(
-                CatalogMeasurement(
-                    row["name"], row["n"], units["unit"] if units else None,
-                    units["dimension"] if units else None,
-                )  # fmt: skip
-            )
-    return Catalog(head[0], head[1] or "", head[2] or "", tags, categories, statuses, authors, measurements)
+    tags = [full.tags.entries[i][0] for i in pick(full.tags, max_tags, max_total_tags)]
+    lists = {}
+    for column, idx in full.columns.items():
+        lists[column] = [idx.entries[i][0] for i in pick(idx, 40, 60)]
+    meas_index = full.measurements
+    measurements = [
+        full.measurement_info[meas_index.entries[i][1]]
+        for i in pick(meas_index, max_measurements, max_total_measurements)
+    ]
+    return Catalog(
+        full.head[0], full.head[1], full.head[2], tags,
+        lists["category"], lists["status"], lists["author"], measurements,
+        all_tags=[e[0] for e in full.tags.entries],
+        all_categories=[e[0] for e in full.columns["category"].entries],
+        all_statuses=[e[0] for e in full.columns["status"].entries],
+        all_authors=[e[0] for e in full.columns["author"].entries],
+        all_measurements={n: full.measurement_info[n] for n in full.measurement_info},
+    )  # fmt: skip

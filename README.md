@@ -67,6 +67,12 @@ Trage mindestens `ELABFTW_API_KEY` ein. Ist dein eLabFTW nicht unter `https://lo
 | `LAB_OLLAMA_TIMEOUT` | Sekunden, bis eine hängende Ollama-Anfrage abbricht | `300` |
 | `LAB_INDEX_IMAGES` | Bildanhänge beim Sync mit dem Bildmodell lesen und durchsuchbar machen | `false` |
 | `LAB_MAX_IMAGE_MB` | Größere Bilder werden übersprungen (Sync) oder abgelehnt (Chat) | `20` |
+| `LAB_VECTOR_DIMS` | Nur die ersten N Dimensionen im Speicher halten (nur für Matryoshka-Modelle, siehe „Große Datenmengen“). `0` = alle | `0` |
+| `LAB_SYNC_INTERVAL` | Abstand der Sync-Runden des Workers in Sekunden (Minimum 60) | `900` |
+| `LAB_MAX_CONCURRENT_LLM` | Gleichzeitige Antwort-Generierungen. Nur erhöhen, wenn Ollama mit `OLLAMA_NUM_PARALLEL` > 1 und genug VRAM läuft | `1` |
+| `LAB_LLM_QUEUE_TIMEOUT` | Sekunden in der Warteschlange, danach „Zu viele Anfragen warten …“ | `600` |
+| `LAB_QUERY_LOG` | Gestellte Fragen samt Zeiten lokal protokollieren (`false` = Fragen nicht speichern) | `true` |
+| `LAB_RERANK_MODEL` | Optionaler Reranker, leer = aus (siehe „Große Datenmengen“) | leer |
 
 Alle Variablen stehen in `.env.example`.
 
@@ -105,7 +111,7 @@ Die Tests laufen gegen Attrappen. Ob alles mit deinem Ollama und eLabFTW funktio
 5. Alles einlesen: `python -m lab_chatbot sync`
 6. Oberfläche starten: `streamlit run app.py`
 
-Der Index wird nicht automatisch aktualisiert. Nach neuen Einträgen in eLabFTW `sync` erneut ausführen oder den Sync-Knopf in der UI nutzen.
+Der Index wird nicht von selbst aktualisiert. Nach neuen Einträgen in eLabFTW `sync` erneut ausführen, den Sync-Knopf in der UI nutzen (läuft im Hintergrund, der Chat bleibt benutzbar, die Seitenleiste zeigt den Fortschritt) oder den Worker starten (siehe „Große Datenmengen“).
 
 ## Lab Assistant
 
@@ -134,6 +140,8 @@ Weitere Befehle:
 - `sync --limit 5`: nur die ersten Experimente, zum Testen
 - `eval --golden <datei>`: Golden-Set laufen lassen
 - `seed-demo`: Demo-Laborbuch anlegen
+- `worker`: Index regelmäßig im Hintergrund aktualisieren (siehe „Große Datenmengen“)
+- `querylog`: Auswertung des Frageprotokolls (`--last N` listet die letzten Fragen)
 
 ### Bilder
 
@@ -144,7 +152,36 @@ Das Bildmodell liest nicht fehlerfrei. Unsicheres markiert es mit `[unclear]`. W
 
 ### Große Datenmengen
 
-Getestet mit einem synthetischen Index aus 50.000 Experimenten und 200.000 Textabschnitten (768-dimensionale Vektoren): Laden der Vektoren rund 1 s nach jedem Sync, eine Suche rund 0,25 s, rund 0,6 GB RAM für die Vektoren. Als Faustregel gilt: Speicher ≈ Abschnitte × Dimension × 4 Byte. Weit über einer Million Abschnitte lohnt ein eigener Vektorindex (siehe `docs/ARCHITECTURE.md`).
+Der Vektorindex im Speicher wird nicht mehr bei jeder Änderung komplett neu geladen. Neue Abschnitte kommen als Delta-Segmente dazu, gelöschte werden in der Tabelle `chunk_tombstones` vermerkt und als tot markiert. Kleine Segmente werden zusammengeführt, bei mehr als 25 % toten Zeilen wird der Index im Speicher verdichtet. Während ein Thread aktualisiert, nutzen andere Anfragen den bisherigen Stand und warten nicht.
+
+Gemessen auf einem Mac mit 400.000 Abschnitten (768 Dimensionen): Laden 1,4 s, 1,2 GB RAM, Suche 25 ms. Aktualisierung nach 50 geänderten Experimenten 9 ms (vorher: jedes Mal komplett neu laden). Faustregel: rund 3 KB RAM pro Abschnitt bei 768 Dimensionen.
+
+**Weniger RAM mit `LAB_VECTOR_DIMS`:** Bei Matryoshka-Embedding-Modellen (embeddinggemma, nomic-embed-text v1.5, mxbai-embed-large, qwen3-embedding) genügen die ersten N Dimensionen (z. B. `256`) im Speicher. Die besten Kandidaten werden mit den vollständig gespeicherten Vektoren neu bewertet, das endgültige Ranking bleibt also exakt. Ein Neu-Indexieren ist zum Umschalten nicht nötig. Gemessen mit 400.000 Abschnitten: 416 MB, Suche 22 ms (rund 1 KB pro Abschnitt). Bei Modellen ohne Matryoshka-Training nicht verwenden.
+
+**Sync:**
+
+- Das Listing aus eLabFTW wird seitenweise gelesen (konstanter Speicher).
+- Es läuft nur ein Sync gleichzeitig, auch über Prozesse hinweg (Sperre in der Datenbank, läuft nach 180 s ab, falls der Halter abstürzt). Andere erhalten „Ein Sync läuft bereits“.
+- Jedes Experiment wird einzeln committet. Ein abgebrochener Sync verliert nichts, ein abgebrochener `sync --full` setzt dort fort, wo er stand.
+- Experimente werden nur aus dem Index gelöscht, wenn das gesamte Listing gelesen wurde.
+- Fortschritt und Status stehen in der Datenbank und erscheinen in der UI, auch bei einem Sync, der woanders gestartet wurde. Nach großen Syncs wird FTS optimiert und das WAL gekürzt.
+
+**Hintergrund-Worker:**
+
+```bash
+python -m lab_chatbot worker              # sofort syncen, dann alle LAB_SYNC_INTERVAL Sekunden
+python -m lab_chatbot worker --once       # eine Runde, für cron oder systemd-Timer
+python -m lab_chatbot worker --full       # erste Runde vollständig
+python -m lab_chatbot worker --interval N # Abstand in Sekunden
+```
+
+Bei Ausfall von eLabFTW oder Ollama wartet der Worker exponentiell länger (bis 1 h). SIGTERM und Strg-C beenden ihn sauber zwischen zwei Experimenten. Bei großen Laborbüchern und in Gruppen empfiehlt sich der Worker als eigener Dienst (z. B. systemd-Unit oder `nohup`) neben der Streamlit-Oberfläche.
+
+**Planner-Katalog:** Der Planner-Prompt enthält die häufigen Tags, Kategorien und Messgrößen plus die, die zur Frage passen (ohne Beachtung von Akzenten, mit Präfix- und Tippfehler-Toleranz). Planwerte werden gegen alle vorhandenen Werte geprüft. Vorher waren nur die 60 häufigsten Tags und 80 Messgrößen bekannt, seltene Namen fielen in großen Laborbüchern heraus. Gemessen: rund 13 ms pro Frage bei 50.000 Experimenten, 5.000 Tags und 3.000 Messgrößen.
+
+**Optionales Reranking:** `LAB_RERANK_MODEL` (z. B. `BAAI/bge-reranker-v2-m3`, mehrsprachig, oder das kleinere `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) bewertet die besten 40 Kandidaten neu. Braucht `pip install sentence-transformers` (zieht torch nach, groß) bzw. `pip install -e ".[rerank]"`. Bei einem Fehler gilt die normale Reihenfolge. `doctor` prüft das Paket, wenn die Variable gesetzt ist. Noch nicht mit einem echten Modell getestet.
+
+**Grenzen:** Einen echten ANN-Index (HNSW) gibt es nicht: hnswlib hat hier keine Wheels für Python 3.14, und die exakte Suche bleibt bis einige Millionen Abschnitte schnell genug. Darüber oder bei mehreren Laboren bzw. Teams wäre Postgres mit pgvector der nächste Schritt (siehe `docs/ARCHITECTURE.md`).
 
 ### Für eine Arbeitsgruppe
 
@@ -154,7 +191,9 @@ Ein Rechner mit Ollama betreibt die Oberfläche, alle anderen öffnen sie im Bro
 streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 ```
 
-Alle teilen sich einen Index. Es läuft immer nur ein Sync gleichzeitig. Streamlit hat keine Anmeldung. Die Oberfläche gehört deshalb nur ins Instituts-Netz oder hinter einen Reverse-Proxy mit Login. Jeder Nutzer sieht alles, was der API-Key des Servers sehen darf.
+Alle teilen sich einen Index. Es läuft immer nur ein Sync gleichzeitig. Antworten laufen über eine faire Warteschlange (FIFO) vor dem Chatmodell: standardmäßig wird eine Antwort gleichzeitig erzeugt (`LAB_MAX_CONCURRENT_LLM`), die UI zeigt „In der Warteschlange: Position N“. Ollama bleibt der Engpass: eine GPU beantwortet eine Frage nach der anderen (vLLM oder ein zweiter GPU-Server würde helfen).
+
+Jede beantwortete Frage schreibt eine Zeile in die Tabelle `query_log` der Index-Datenbank (Zeit, Frage, Route, Quellen, Zeiten je Schritt, Fehler, Modelle). Es bleiben die neuesten 100.000 Zeilen. `python -m lab_chatbot querylog` zeigt p50/p95 je Schritt, Fehlerquote und Anteil der Suchen ohne Quellen. Pro Frage gibt es außerdem eine INFO-Logzeile mit den Zeiten, ohne Fragetext. Die Fragen liegen lokal in der Index-Datenbank. Wer das nicht möchte, setzt `LAB_QUERY_LOG=false`. Streamlit hat keine Anmeldung. Die Oberfläche gehört deshalb nur ins Instituts-Netz oder hinter einen Reverse-Proxy mit Login. Jeder Nutzer sieht alles, was der API-Key des Servers sehen darf.
 
 Intern entscheidet ein Planner pro Frage, ob SQL, Hybridsuche (Vektoren plus Stichwörter) oder beides nötig ist. Details in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -213,6 +252,8 @@ RUN_E2E=1 pytest tests/e2e -v
 | „Refusing to delete everything“ | eLabFTW lieferte 0 Experimente, der Index ist aber gefüllt. Falscher Key oder Team? Nur `--force-empty` leert trotzdem |
 | Index leer | `python -m lab_chatbot sync` oder `seed-demo` |
 | Zu wenige oder zu viele Treffer | `search` zeigt Scores, dann `LAB_MIN_DENSE` anpassen |
+| „Ein Sync läuft bereits“ | Ein anderer Sync oder Worker hält die Sperre. Abwarten, sie läuft nach 180 s ab, wenn der Halter abgestürzt ist |
+| „Zu viele Anfragen warten …“ | Warteschlange voll: `LAB_LLM_QUEUE_TIMEOUT` erhöhen, `LAB_MAX_CONCURRENT_LLM` nur bei passender Ollama-Konfiguration |
 | Antwort bricht nach Minuten ab | Modell lädt zu langsam: `LAB_OLLAMA_TIMEOUT` erhöhen oder kleineres Modell |
 | „Vision model failed“ / Bild wird nicht gelesen | `ollama pull minicpm-v4.6:1b` (oder `LAB_VISION_MODEL`), Format JPEG/PNG, HEIC braucht `pillow-heif` |
 
@@ -235,6 +276,7 @@ Der Index ist für einen Benutzer gedacht. Wer den Chatbot bedient, sieht alles,
 - Aggregate lassen sich nicht mit einer semantischen Bedingung kombinieren.
 - Unbekannte Einheiten werden nur untereinander verglichen, nie geraten.
 - Der Schwellwert `LAB_MIN_DENSE=0.30` ist ein Startwert. Mit eigenen Fragen und `eval` nachjustieren.
+- Kein ANN-Index, Reranking noch nicht mit echtem Modell getestet (siehe „Große Datenmengen“).
 - Die gemeinsame Oberfläche ist mit Streamlit 1.67 getestet. Ältere Versionen sind ungeprüft.
 
 ## Struktur

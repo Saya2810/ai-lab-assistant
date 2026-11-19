@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 chatbot = ["streamlit>=1.46,<2", "ollama>=0.5,<1", "numpy>=1.26,<3", "pandas>=2.0,<3", "pydantic>=2.5,<3", "Pillow>=10.0,<13"]
 assistant = ["streamlit>=1.46,<2", "ollama>=0.5,<1", "Pillow>=10.0,<13"]
+rerank = ["sentence-transformers>=3,<6"]
 heic = ["pillow-heif>=0.16,<2"]
 audio = ["faster-whisper>=1.0,<2"]
 app = ["streamlit>=1.46,<2", "ollama>=0.5,<1", "numpy>=1.26,<3", "pandas>=2.0,<3", "pydantic>=2.5,<3", "Pillow>=10.0,<13"]

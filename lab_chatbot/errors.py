@@ -13,3 +13,11 @@ class BackendUnavailable(ChatbotError):
 
 class SyncError(ChatbotError):
     """The eLabFTW -> index synchronisation could not run safely."""
+
+
+class BackendBusy(ChatbotError):
+    """The language model is busy and the request waited too long in the queue."""
+
+
+class SyncBusy(SyncError):
+    """Another sync (UI, CLI or the background worker, maybe in another process) is running."""

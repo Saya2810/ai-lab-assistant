@@ -336,6 +336,64 @@ _ID_PATTERN = re.compile(
 _ISO_DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
 
+def _value_named(value: str, folded_text: str, tokens: list[str]) -> bool:
+    """Does the user's text name ``value`` (accent/case-insensitive, inflection- and typo-tolerant)?"""
+    from lab_chatbot.retrieval import fold
+
+    folded = fold(value)
+    if not folded.strip() or folded in folded_text:
+        return True
+    for word in re.findall(r"\w+", folded):
+        if len(word) < 3:
+            continue
+        for token in tokens:
+            if word == token:
+                return True
+            if len(word) >= 4 and len(token) >= 4:
+                head = max(4, min(len(word), len(token)) - 2)
+                if word[:head] == token[:head]:
+                    return True
+                if difflib.SequenceMatcher(None, word, token).ratio() >= 0.84:
+                    return True
+    return False
+
+
+def ground_filters(plan: Plan, question: str, history: Sequence[dict] | None = None) -> Plan:
+    """Drop tag/category/status/author/id filters the user never mentioned.
+
+    Small planner models sometimes copy half the catalog into the filters (seen:
+    every tag plus a status for "Bei welchem Experiment gab es Rauschen bei
+    Probe A3?"). Such a filter silently returns nothing. A filter value must
+    therefore appear in the question or in one of the last user turns
+    (follow-ups such as "und davon nur die abgeschlossenen?"); otherwise it is
+    removed and the search runs wider instead of coming back empty.
+    """
+    from lab_chatbot.retrieval import fold, query_tokens
+
+    recent = [m.get("content", "") for m in (history or []) if m.get("role") == "user"][-2:]
+    text = " ".join([*recent, question])
+    folded_text, tokens = fold(text), [fold(t) for t in query_tokens(text)]
+    f = plan.filters
+
+    def keep(value: str | None, label: str) -> bool:
+        if not value or _value_named(value, folded_text, tokens):
+            return True
+        plan.notes.append(f"Dropped {label} '{value}': not mentioned in the question.")
+        return False
+
+    f.tags_all = [v for v in f.tags_all if keep(v, "tag")]
+    f.tags_any = [v for v in f.tags_any if keep(v, "tag")]
+    numbers = {int(n) for n in re.findall(r"(?<![\w.,])(\d+)(?![\w.,]\d)", text)}
+    invented = [i for i in f.experiment_ids if i not in numbers]
+    if invented:
+        f.experiment_ids = [i for i in f.experiment_ids if i in numbers]
+        plan.notes.append(f"Dropped experiment ids {invented}: not in the question.")
+    for attr in ("category", "status", "author"):
+        if not keep(getattr(f, attr), attr):
+            setattr(f, attr, None)
+    return plan
+
+
 def extract_ids(question: str) -> list[int]:
     ids: list[int] = []
     for match in _ID_PATTERN.finditer(question):
@@ -364,17 +422,17 @@ def normalize_plan(
     filters = Filters(
         date_from=_valid_date(f.date_from, notes),
         date_to=_valid_date(f.date_to, notes),
-        tags_all=snap_all(f.tags_all, catalog.tags, "tag"),
-        tags_any=snap_all(f.tags_any, catalog.tags, "tag"),
+        tags_all=snap_all(f.tags_all, catalog.tag_options(), "tag"),
+        tags_any=snap_all(f.tags_any, catalog.tag_options(), "tag"),
         experiment_ids=sorted(set(f.experiment_ids)),
     )
     if filters.date_from and filters.date_to and filters.date_from > filters.date_to:
         filters.date_from, filters.date_to = filters.date_to, filters.date_from
         notes.append("Swapped date range (from was after to).")
     for attr, options, label in (
-        ("category", catalog.categories, "category"),
-        ("status", catalog.statuses, "status"),
-        ("author", catalog.authors, "author"),
+        ("category", catalog.category_options(), "category"),
+        ("status", catalog.status_options(), "status"),
+        ("author", catalog.author_options(), "author"),
     ):
         wanted = getattr(f, attr)
         if wanted:
@@ -390,7 +448,7 @@ def normalize_plan(
     if m and m.name.strip():
         known = catalog.measurement(m.name)
         if known is None:
-            close = snap(m.name, [c.name for c in catalog.measurements])
+            close = snap(m.name, catalog.measurement_names())
             known = catalog.measurement(close) if close else None
         if known is None:
             notes.append(f"Ignored unknown measurement '{m.name}'.")
@@ -637,7 +695,7 @@ class Planner:
         return RawPlan.model_validate(_parse_json(output))
 
     def plan(self, question: str, history: Sequence[dict] | None = None) -> Plan:
-        catalog = load_catalog(self.store)
+        catalog = load_catalog(self.store, question=question)
         if _CHITCHAT.match(question):
             return Plan(
                 "chitchat", question, "", source="heuristic",
@@ -648,6 +706,7 @@ class Planner:
                 build_planner_messages(question, catalog, self.today(), history)
             )
             plan = normalize_plan(raw, catalog, question, self.default_language)
+            plan = ground_filters(plan, question, history)
         except BackendUnavailable:
             raise
         except Exception as exc:

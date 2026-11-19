@@ -7,6 +7,7 @@ the first sources silently disappear.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Iterator, Protocol, Sequence
 
 from lab_chatbot.embeddings import translate_ollama_error
@@ -31,7 +32,12 @@ class OllamaLLM:
         temperature: float = 0.0,
         keep_alive: str = "10m",
         timeout: float | None = None,
+        gate=None,
+        queue_timeout: float | None = None,
     ):
+        # gate: optional LLMGate; None means no admission control.
+        self.gate = gate
+        self.queue_timeout = queue_timeout
         self.model = model
         self.timeout = timeout
         self.host = host or "http://localhost:11434"
@@ -51,6 +57,11 @@ class OllamaLLM:
     def _options(self) -> dict:
         return {"temperature": self.temperature, "num_ctx": self.num_ctx}
 
+    def _slot(self):
+        if self.gate is None:
+            return nullcontext()
+        return self.gate.slot(self.queue_timeout)
+
     def _call(self, **kwargs):
         try:
             return self.client.chat(
@@ -66,11 +77,15 @@ class OllamaLLM:
         kwargs = {"messages": list(messages)}
         if schema is not None:
             kwargs["format"] = schema
-        response = self._call(**kwargs)
+        with self._slot():
+            response = self._call(**kwargs)
         return response["message"]["content"]
 
     def stream(self, messages: Sequence[Message]) -> Iterator[str]:
-        for part in self._call(messages=list(messages), stream=True):
-            piece = part["message"]["content"]
-            if piece:
-                yield piece
+        # The slot is taken on first iteration and released when the generator
+        # is exhausted, closed early or raises.
+        with self._slot():
+            for part in self._call(messages=list(messages), stream=True):
+                piece = part["message"]["content"]
+                if piece:
+                    yield piece

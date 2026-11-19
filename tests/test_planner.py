@@ -56,7 +56,7 @@ def test_fuzzy_snap_of_tag_category_status(planner_for):
     planner, _ = planner_for(
         plan_json("list", filters={"tags_any": ["spektroskopy"], "category": "messung", "status": "in arbeit"})
     )
-    plan = planner.plan("Liste")
+    plan = planner.plan("Liste Spektroskopy, Kategorie Messung, Status in Arbeit")
     assert plan.filters.tags_any == ["spektroskopie"]
     assert (plan.filters.category, plan.filters.status) == ("Messung", "In Arbeit")
 
@@ -125,7 +125,7 @@ def test_lenient_types(planner_for):
         '{"intent":"list","filters":{"tags_all":"raman","experiment_ids":"Experiment 102 und 105"},'
         '"measurement":{"name":"Laserleistung","op":">","value":"1,5"}}'
     )
-    plan = planner.plan("x")
+    plan = planner.plan("Raman: Experiment 102 und 105 mit Laserleistung über 1,5 W")
     assert plan.filters.tags_all == ["raman"] and plan.filters.experiment_ids == [102, 105]
     assert plan.measurement.value == 1.5
 
@@ -267,3 +267,30 @@ def test_detect_language():
     assert detect_language("Wie viele Experimente gab es?") == "de"
     assert detect_language("How many experiments were there?") == "en"
     assert detect_language("A3 532", default="en") == "en"
+
+
+def test_filters_the_user_never_mentioned_are_dropped(planner_for):
+    # seen with qwen2.5:7b: every tag of the catalog plus a status, so nothing was found
+    everything = plan_json("search", "Rauschen Probe A3", filters={
+        "tags_all": ["spektroskopie", "laser", "raman", "puffer"], "status": "Abgeschlossen"})
+    planner, _ = planner_for(everything)
+    plan = planner.plan("Bei welchem Experiment gab es Rauschen bei Probe A3?")
+    assert plan.filters.tags_all == [] and plan.filters.status is None
+    assert any("Dropped tag 'raman'" in note for note in plan.notes)
+
+
+def test_invented_experiment_ids_are_dropped(planner_for):
+    planner, _ = planner_for(plan_json("search", "Rauschen", filters={"experiment_ids": [7, 8]}))
+    assert planner.plan("Warum war das Rauschen bei Probe A3 so hoch?").filters.experiment_ids == []
+    planner, _ = planner_for(plan_json("list", filters={"experiment_ids": [102, 105]}))
+    assert planner.plan("Vergleiche Experiment 102 und 105").filters.experiment_ids == [102, 105]
+
+
+def test_grounding_tolerates_inflection_and_follow_ups(planner_for):
+    planner, _ = planner_for(plan_json("list", filters={"tags_all": ["raman"], "status": "Abgeschlossen"}))
+    plan = planner.plan("Welche abgeschlossenen Raman-Messungen gibt es?")
+    assert (plan.filters.tags_all, plan.filters.status) == (["raman"], "Abgeschlossen")
+    history = [{"role": "user", "content": "Zeig mir die Raman-Experimente"},
+               {"role": "assistant", "content": "Das sind 102 und 105."}]
+    plan = planner.plan("und davon nur die abgeschlossenen?", history)
+    assert (plan.filters.tags_all, plan.filters.status) == (["raman"], "Abgeschlossen")

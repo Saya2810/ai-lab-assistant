@@ -41,6 +41,13 @@ class ChatbotConfig:
     index_images: bool = False
     max_image_mb: float = 20.0
     max_images_per_experiment: int = 10
+    # large installations / many users
+    max_concurrent_llm: int = 1
+    llm_queue_timeout: float = 600.0
+    query_log: bool = True
+    rerank_model: str = ""
+    vector_dims: int = 0
+    sync_interval: int = 900
 
     @classmethod
     def from_env(cls, db_path: str | Path | None = None) -> "ChatbotConfig":
@@ -63,4 +70,10 @@ class ChatbotConfig:
             index_images=env_bool("LAB_INDEX_IMAGES", False),
             max_image_mb=env_float("LAB_MAX_IMAGE_MB", 20.0),
             max_images_per_experiment=env_int("LAB_MAX_IMAGES_PER_EXPERIMENT", 10),
+            max_concurrent_llm=max(1, env_int("LAB_MAX_CONCURRENT_LLM", 1)),
+            llm_queue_timeout=env_float("LAB_LLM_QUEUE_TIMEOUT", 600.0),
+            query_log=env_bool("LAB_QUERY_LOG", True),
+            rerank_model=env_str("LAB_RERANK_MODEL", "") or "",
+            vector_dims=max(0, env_int("LAB_VECTOR_DIMS", 0)),
+            sync_interval=max(60, env_int("LAB_SYNC_INTERVAL", 900)),
         )
