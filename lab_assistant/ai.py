@@ -67,21 +67,34 @@ IMPORTANT:
 - Preserve the mathematical content exactly as supplied.
 - Formatting may change; scientific content may not.
 
-MEASUREMENTS
+MEASUREMENTS (all quantitative values)
 
-Only add a value to "measurements" when the source explicitly
-identifies it as an experimental measurement.
+Put EVERY quantitative value that the source states into "measurements":
+settings and conditions (temperatures, durations, power, wavelengths,
+speeds), amounts, volumes and concentrations, counts (cycles,
+repetitions, averages), and results (peaks, absorbance, pH, yields).
+Lab notes rarely say "measurement"; a value counts when it is written
+in the source.
 
-Do not treat equations, example calculations, theoretical constants,
-or calculated values as measurements.
+- name: short and specific, in the language of the source. When two
+  values share a quantity, name what they belong to, e.g.
+  "Annealing temperature" and "Elongation temperature", not "Temperature".
+  Every name must be unique.
+- value: the number exactly as written, as a string: keep a decimal
+  comma, a range such as "15-20", or "2e5" as they are.
+- unit: exactly as written ("°C", "µL", "mM", "mL/min"); "" when there is none.
+- One entry per value. Never convert, combine, round or calculate.
 
-Measurement format:
+Do not include: dilution ratios such as 1:10, dates or times of day,
+sample, device or step numbers, equations, constants from equations,
+or values you would have to calculate.
+
+Measurement format (example from a chromatography note):
 
 {
-  "Wavelength": {
-    "value": 532,
-    "unit": "nm"
-  }
+  "Flow rate": {"value": "1,2", "unit": "mL/min"},
+  "Column temperature": {"value": "30", "unit": "°C"},
+  "Injections": {"value": "3", "unit": ""}
 }
 
 OUTPUT
@@ -114,6 +127,9 @@ Remember:
 - do not infer missing information
 - use $...$ and $$...$$ for all mathematics
 - do not use code fences
+- "measurements": one entry for every number with its unit in the source
+  (settings, amounts, durations, results), never empty when the source has such values
+- measurement names in the language of the source (German notes: German names)
 """
 
 CHARS_PER_TOKEN = 2.8  # conservative for German text and LaTeX

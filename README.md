@@ -147,6 +147,34 @@ Weitere Befehle:
 - `seed-demo`: Demo-Laborbuch anlegen
 - `worker`: Index regelmäßig im Hintergrund aktualisieren (siehe „Große Datenmengen“)
 - `querylog`: Auswertung des Frageprotokolls (`--last N` listet die letzten Fragen)
+- `benchmark`: Qualität und Zeiten messen, Bericht mit Grafiken (siehe „Qualität messen“)
+
+### Qualität messen
+
+```bash
+python -m lab_chatbot benchmark --answers --assistant
+```
+
+Der Befehl stellt feste Fragensätze, misst Suche, Routing, Antworten und Zeiten und schreibt `reports/<Datum>/report.html` (eine Datei mit allen Grafiken, zum Weitergeben) sowie `results.json` mit jedem Einzelwert. Ohne Ollama-Anfragen für Antworten geht es schneller (ohne `--answers`). Für die Grafiken braucht es matplotlib (`pip install -e ".[eval]"`, in `requirements.txt` enthalten).
+
+Mitgeliefert sind drei Fragensätze zum Demo-Laborbuch: `standard` (9 Fragen), `paraphrase` (12 Fragen mit anderen Wörtern oder auf Englisch) und `unanswerable` (6 Fragen zu Themen, die nicht im Laborbuch stehen). Für das eigene Laborbuch legt man eine JSON-Datei mit Fragen und erwarteten Experiment-Nummern an und übergibt sie mit `--set name=datei.json` (mehrfach möglich); eine Frage ohne `expect_ids` gilt als „steht nicht im Laborbuch“.
+
+Was der Bericht zeigt (die Darstellungen sind in der Retrieval- und RAG-Forschung üblich, Quellen stehen im Bericht):
+
+| Grafik | Frage dahinter |
+|---|---|
+| Hit@k-Kurve, Hit@1/Hit@3/MRR/nDCG@10 mit 95 %-Bootstrap-Intervall | Findet die Suche das richtige Experiment, und an welcher Stelle? |
+| Ablation: gepaarte Unterschiede je Frage mit Intervall und Randomisierungstest | Was bringt welcher Baustein (Vektoren, Stichwörter, Synonyme, zweite Formulierung)? |
+| Verteilung der Ähnlichkeiten, richtig gegen falsch, mit den Schwellen | Kann eine Schwelle überhaupt trennen? |
+| ROC-Kurve (AUROC) und Risk-Coverage-Kurve | Erkennt der Chatbot, wenn etwas nicht im Laborbuch steht? |
+| Konfusionsmatrix | Wählt der Planer den richtigen Weg (Zählen, Liste, Suche ...)? |
+| Boxplot je Schritt, Verteilung der Gesamtzeit (p50/p95) | Wie lange dauert was? |
+| Heatmap je Frage und Variante | Welche Fragen scheitern? |
+| Precision/Recall/F1 der Messwerte, Zahlen ohne Beleg, Dauer | Wie gut macht der Lab Assistant aus Notizen einen Entwurf? |
+
+Mit wenigen Fragen sind die Intervalle breit. Ein Unterschied, dessen Intervall die Null enthält, ist nicht belegt.
+
+Die Messung des Lab Assistant allein: `python -m lab_assistant eval --json ergebnis.json`. Sie vergleicht die Messwerte im Entwurf (Name, Zahl, Einheit) mit einer Referenz je Notiz. Werte, die nicht in der Referenz, aber genau so in der Notiz stehen, zählen als Zusatz („Precision inkl. Zusätze“). Fehler sind Werte, die nirgends in der Notiz stehen, und richtige Zahlen unter falschem Namen.
 
 ### Suche eingrenzen
 

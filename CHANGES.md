@@ -198,7 +198,24 @@ Gemessen mit dem echten Modell am Demo-Laborbuch, mit 12 umschriebenen Fragen (a
 * **Offen:** Eine Gegenprobe („Which solvent was used for the NMR measurement?“) findet noch ein Experiment mit genau 0,35. Das kleine Embedding-Modell ist die Grenze; ein Reranker (`LAB_RERANK_MODEL`) oder ein größeres Embedding-Modell wäre der nächste Schritt. Die Werte stammen aus 8 Demo-Experimenten und sind für echte Laborbücher erneut zu messen.
 * **Aufgeräumt:** leere Ordner `app/`, `database/`, eine alte virtuelle Umgebung `.venv_old`, ein veralteter README-Entwurf und `.DS_Store`-Dateien entfernt (in den Papierkorb). `requirements-dev.txt` ging in `requirements.txt` auf (CI angepasst).
 
-## 14. Bewusst nicht getan / offen
+## 14. Qualität messen und darstellen
+
+* `python -m lab_chatbot benchmark` (`--answers`, `--assistant`, `--set name=datei.json`) misst Suche, Routing, Antworten und Zeiten auf festen Fragensätzen und schreibt `reports/<Datum>/report.html` (eine Datei mit allen Grafiken) und `results.json`.
+* Grafiken nach üblicher Praxis der Retrieval- und RAG-Evaluation: Hit@k-Kurve, Hit@1/Hit@3/MRR/nDCG@10 mit Bootstrap-Intervallen, Ablation als gepaarte Unterschiede mit Randomisierungstest, Ähnlichkeitsverteilungen mit Schwellen, ROC und Risk-Coverage für „steht nicht im Laborbuch“, Konfusionsmatrix des Routings, Zeiten je Schritt mit p50/p95, Heatmap je Frage.
+* `python -m lab_assistant eval`: 9 Notiz-Fälle, Precision/Recall/F1 der Messwerte (Name, Zahl, Einheit tolerant verglichen), erfundene und vergessene Zahlen, Dauer.
+* Erster Lauf (Demo-Laborbuch, qwen2.5:7b, embeddinggemma): Standardfragen Hit@1 1,00; umschriebene Fragen Hit@1 0,75, Hit@3 0,92; 1 von 6 fremden Fragen bekommt Treffer; AUROC 0,99; Antwort p50 5,4 s, p95 9,1 s. Ablation: Stichwortsuche allein ist deutlich schlechter (Reciprocal Rank −0,31), die übrigen Bausteine liegen bei −0,04 bis −0,08 mit Intervallen, die die Null berühren: mit 19 Fragen nicht belegt.
+* **Lab Assistant, Messwerte im Entwurf:** Der Prompt übernahm Werte nur, wenn die Notiz sie „ausdrücklich als Messung“ kennzeichnet; Laborbuch-Notizen tun das fast nie. Jetzt kommen alle Zahlen mit Einheit hinein (Einstellungen, Mengen, Dauern, Ergebnisse), ohne Umrechnen, Namen in der Sprache der Notiz; das Beispiel im Prompt stammt aus einem Gebiet, das in den Testfällen nicht vorkommt (ein Test prüft das). Gemessen an 9 Notizen, zwei Läufe gleich:
+
+  | | vorher | nachher |
+  |---|---|---|
+  | Recall der Messwerte | 0,18 | 0,85 |
+  | F1 | 0,30 | 0,75 |
+  | Precision inkl. Zusätzen, die so in der Notiz stehen | – | 0,91 |
+  | erfundene Zahlen im Text | 0 | 0 |
+
+* **Auswertung genauer:** Werte, die nicht in der Referenz, aber genau so in der Notiz stehen, zählen als Zusatz statt als Fehler (die Referenz enthält die wesentlichen Werte, nicht jede Zahl). Fehler sind Werte, die nirgends in der Notiz stehen, und Werte unter falschem Namen: Im Fall „10 µL Stammlösung + 90 µL H2O“ beschriftet das Modell die 90 µL als Stammlösung. Die Prüfung auf erfundene Zahlen sieht so etwas nicht, der Abgleich mit der Referenz schon. Bei deutschen Notizen benennt das Modell Werte teils noch englisch.
+
+## 15. Bewusst nicht getan / offen
 
 * Neue Eingabefelder im Assistant müssen in `lab_assistant/state.py` eingetragen werden, damit sie den Seitenwechsel überleben (Buttons und Upload-Feld ausgenommen).
 * `AppTest` kann zwischen `st.Page`-Funktionen nicht wechseln; der echte Seitenwechsel wird nur vom optionalen Browser-Test (`RUN_E2E=1`) abgedeckt.

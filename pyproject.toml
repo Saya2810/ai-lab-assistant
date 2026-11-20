@@ -22,6 +22,7 @@ heic = ["pillow-heif>=0.16,<2"]
 audio = ["faster-whisper>=1.0,<2"]
 app = ["streamlit>=1.46,<2", "ollama>=0.5,<1", "numpy>=1.26,<3", "pandas>=2.0,<3", "pydantic>=2.5,<3", "Pillow>=10.0,<13"]
 dev = ["pytest>=8.0,<10"]
+eval = ["matplotlib>=3.8,<4"]
 
 [project.scripts]
 lab-chatbot = "lab_chatbot.cli:main"
@@ -31,3 +32,4 @@ packages = ["shared", "lab_assistant", "lab_assistant.components", "lab_chatbot"
 
 [tool.setuptools.package-data]
 lab_chatbot = ["golden_demo.json", "eval_demo_paraphrase.json", "eval_demo_negative.json"]
+lab_assistant = ["eval_demo_assistant.json"]

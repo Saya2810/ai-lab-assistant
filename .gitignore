@@ -3,6 +3,7 @@
 deploy/elabftw/.env
 
 # generated data
+reports/
 data/
 models/
 deploy/elabftw/data/

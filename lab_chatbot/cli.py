@@ -131,6 +131,59 @@ def cmd_worker(args, config) -> int:
     return run_worker(config, once=args.once, full_first=args.full, interval=args.interval)
 
 
+def cmd_benchmark(args, config) -> int:
+    """Run the question sets (and optionally the Lab Assistant cases) and write a report."""
+    import time
+    from pathlib import Path
+
+    from lab_chatbot import benchmark
+    from lab_chatbot.factory import build_engine
+
+    out = Path(args.out or Path("reports") / time.strftime("%Y-%m-%d_%H%M"))
+    sets = benchmark.load_sets(args.set)
+    engine = build_engine(config)
+    total = sum(len(cases) for cases in sets.values())
+    done = {"n": 0}
+
+    def progress(message: str) -> None:
+        done["n"] += 1
+        print(f"\r  {done['n']}/{total} {message[:70]:<70}", end="", file=sys.stderr, flush=True)
+
+    result = benchmark.run(engine, sets, answers=args.answers, progress=progress)
+    print(file=sys.stderr)
+    benchmark.save(result, out / "results.json")
+
+    assistant = None
+    if args.assistant_json:
+        assistant = json.loads(Path(args.assistant_json).read_text(encoding="utf-8"))
+    elif args.assistant:
+        from lab_assistant.ai import generate_lab_entry
+        from lab_assistant.config import AssistantConfig
+        from lab_assistant.evaluation import evaluate_assistant, load_cases
+
+        assistant_config = AssistantConfig.from_env()
+        print("  Lab Assistant cases ...", file=sys.stderr)
+        assistant = evaluate_assistant(load_cases(), lambda notes: generate_lab_entry(notes, assistant_config))
+        (out / "assistant.json").write_text(json.dumps(assistant, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    try:
+        from lab_chatbot.report import write_report
+    except ImportError:
+        print(f"Results: {out / 'results.json'} (install matplotlib for the plots: pip install -e \".[eval]\")")
+        return 0
+    path = write_report(result, out, assistant)
+    for name, data in result["sets"].items():
+        r = data["retrieval"]
+        if r:
+            print(f"{name:<13} n={r['n']:<3} Hit@1={r['hit_at'][1]:.2f}  Hit@3={r['hit_at'][3]:.2f}  MRR={r['mrr']:.2f}")
+        if data["false_answers"]:
+            print(f"{name:<13} hits for questions without an answer: {data['false_answers']['hybrid']:.0%}")
+    if result["auroc"] is not None:
+        print(f"AUROC answerable vs not: {result['auroc']:.2f}")
+    print(f"Report: {path}")
+    return 0
+
+
 def cmd_ask(args, config) -> int:
     from lab_chatbot.factory import build_engine
 
@@ -298,6 +351,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--golden", required=True, help="JSON file with questions and expectations")
     p.add_argument("--full", action="store_true", help="also run the LLM to check expect_contains")
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("benchmark", help="measure quality and speed, write an HTML report with plots")
+    p.add_argument("--set", action="append", metavar="NAME[=PATH]",
+                   help="question set: standard, paraphrase, unanswerable (demo) or name=file.json; repeatable")
+    p.add_argument("--answers", action="store_true", help="also generate every answer (slower: citations, numbers)")
+    p.add_argument("--assistant", action="store_true", help="also run the Lab Assistant cases (needs the text model)")
+    p.add_argument("--assistant-json", metavar="PATH", help="include an existing `python -m lab_assistant eval --json` result")
+    p.add_argument("--out", metavar="DIR", help="output folder (default: reports/<date_time>)")
+    p.set_defaults(func=cmd_benchmark)
 
     p = sub.add_parser("querylog", help="latency and failure summary of answered questions")
     p.add_argument("--days", type=float, default=7, help="summary window in days (default 7)")

@@ -1,3 +1,4 @@
 # Everything: assistant + chatbot + tests
 -r requirements-app.txt
 pytest>=8.0,<10
+matplotlib>=3.8,<4   # plots of `python -m lab_chatbot benchmark`
